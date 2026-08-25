@@ -107,6 +107,57 @@ MACD, RSI and moving averages are all transforms of one close-price series. Agre
 between them reads like corroboration and is closer to double-counting, which is why
 adding the regime filter and RSI guard moved the backtest so little.
 
+## What finally beat the baseline: proximity to the high
+
+Every price-derived *timing* rule tested here underperformed buy-and-hold. One
+*conditional* reading did not. Bucketing all 1358 weekly bars by drawdown from the
+running high, and measuring the mean return over the following 52 weeks:
+
+| Zone | Next 52w | Win rate | n |
+|---|---|---|---|
+| At the highs (0–2% off) | **+20.06%** | 91% | 275 |
+| Shallow dip (2–5% off) | **+20.69%** | 93% | 216 |
+| Moderate dip (5–10% off) | +13.60% | 74% | 260 |
+| Correction (10–20% off) | +8.04% | 74% | 204 |
+| Bear market (20%+ off) | +5.68% | 57% | 351 |
+| *Any week (baseline)* | *+13.13%* | *76%* | *1306* |
+
+Gold near its high kept going; gold far below its high stayed weak. **Buying the dip has
+been the worse trade on gold** — the deeper the dip, the worse the next year, monotonically
+across every bucket. Adding the uptrend filter sharpens it further: the 2–5% zone above the
+50-week MA ran +21.93% with a 92% win rate.
+
+Caveat that matters: the forward windows overlap heavily, so the effective sample is far
+smaller than n suggests, and this is one asset over one 25-year window that was mostly a
+secular bull. It is a description of the record, not a significance test.
+
+## Corrected: the RSI guard was backwards
+
+The first version flagged RSI ≥ 70 as "overbought — late entry", on the standard reading.
+Bucketing the same 25 years says the opposite:
+
+| Weekly RSI at entry | Next 52w | Win rate | n |
+|---|---|---|---|
+| 65–100 | **+17.71%** | 82% | 283 |
+| 55–65 | +15.34% | 81% | 402 |
+| 45–55 | +11.57% | 72% | 431 |
+| 35–45 | +7.15% | 67% | 180 |
+| 0–35 | +8.23% | 67% | 48 |
+
+Forward returns rise monotonically with RSI. On gold, strong momentum has been
+confirmation, not a warning. The flag now reads "strong momentum · confirming", and the
+caution has moved to the *low* end where the record actually supports it.
+
+## Rejected: MACD divergence
+
+Divergence between price pivots and the MACD histogram was implemented with causal pivot
+confirmation (a pivot at bar i is only known at i+k) and measured across k = 3, 4, 5 on
+weekly and 5, 8, 10 on daily. Bearish divergences were followed by gold going *up* more
+than baseline (weekly k=4: +10.55% over 26 weeks against a +6.26% baseline), and daily
+bullish divergences underperformed baseline at short horizons. With only 13–30 events per
+configuration, the honest reading is that there is no detectable effect either way — not
+enough signal to justify putting an arrow on the chart.
+
 ## Local development
 
 ```bash

@@ -110,8 +110,8 @@ var COLOR = {BUY:'var(--buy)', SELL:'var(--sell)', HOLD:'var(--hold)'};
 var FLAGS = {
   'regime-veto-buy':  'Regime veto · below 50MA',
   'regime-veto-sell': 'Regime veto · above 50MA',
-  'extended':         'Overbought · late entry',
-  'washed-out':       'Oversold · bounce risk'
+  'momentum-strong':  'Strong momentum · confirming',
+  'momentum-weak':    'Weak momentum · worse setup'
 };
 var DATA = null, KEY = 'weekly';
 
@@ -189,12 +189,13 @@ function render(){
       stat('Signal line', F(d.signal)) +
       stat('Histogram', F(d.hist), d.hist >= 0 ? 'var(--buy)' : 'var(--sell)') +
       stat('RSI ' + DATA.params.rsi, F(d.rsi, 1),
-           d.rsi >= 70 ? 'var(--sell)' : d.rsi <= 30 ? 'var(--buy)' : null,
-           d.rsi >= 70 ? 'overbought' : d.rsi <= 30 ? 'oversold' : 'neutral') +
+           d.rsi >= 70 ? 'var(--buy)' : d.rsi <= 30 ? 'var(--sell)' : null,
+           d.rsi >= 70 ? 'strong momentum' : d.rsi <= 30 ? 'weak momentum' : 'neutral') +
       stat('50-' + bar + ' MA', '$' + F(d.ma, 0)) +
       stat('Since MACD cross', d.crossAge + ' ' + bar + (d.crossAge === 1 ? '' : 's')) +
     '</div></section>' +
 
+    proximity(s, bar) +
     trackRecord(s, bar) +
     heatmap(s) +
 
@@ -256,6 +257,57 @@ function trackRecord(s, bar){
     ' of them profitable, averaging ' + pct(pos.avg) + ' over ' + pos.avgBars + ' ' + bar + 's ' +
     '(best ' + pct(pos.best) + ', worst ' + pct(pos.worst) + ').</div>' +
     '</section>';
+}
+
+function proximity(s, bar){
+  var p = s.proximity;
+  if (!p || !p.table) return '';
+  var h = String(p.horizons[p.horizons.length - 1]);
+  var base = p.baseline[h];
+  var unit = bar === 'week' ? 'w' : 'd';
+
+  var rows = p.table.map(function(b){
+    var f = b.fwd[h];
+    var here = b.label === p.now.bucket;
+    var range = b.hi === null ? b.lo + '%+' : b.lo + '–' + b.hi + '%';
+    if (!f) return '<tr' + (here ? ' style="background:var(--card2)"' : '') +
+      '><td>' + b.label + '<br><small style="color:var(--dim)">' + range + ' off high</small></td>' +
+      '<td colspan="3" style="color:var(--dim);text-align:center">too few samples</td></tr>';
+    var strong = f.mean > base.mean;
+    return '<tr' + (here ? ' style="background:var(--card2)"' : '') + '>' +
+      '<td>' + (here ? '<b style="color:var(--gold)">▸ ' + b.label + '</b>' : b.label) +
+        '<br><small style="color:var(--dim)">' + range + ' off high</small></td>' +
+      '<td style="color:' + (strong ? 'var(--buy)' : 'var(--dim)') + '"><b>' + pct(f.mean) + '</b></td>' +
+      '<td>' + f.win + '%</td><td style="color:var(--dim)">' + f.n + '</td></tr>';
+  }).join('');
+
+  var cur = null;
+  for (var i = 0; i < p.table.length; i++) if (p.table[i].label === p.now.bucket) cur = p.table[i];
+  var cf = cur && cur.fwd[h];
+  var note;
+  if (!cf){
+    note = 'Too few historical samples in this zone to say anything.';
+  } else if (cf.mean > base.mean){
+    note = 'Gold is <b>' + p.now.drawdown + '% off its period high</b> — the "' + p.now.bucket +
+      '" zone, which historically ran <b>' + pct(cf.mean) + '</b> over the next ' + h + unit +
+      ' against an all-weeks average of ' + pct(base.mean) + '.';
+  } else {
+    note = 'Gold is <b>' + p.now.drawdown + '% off its period high</b> — the "' + p.now.bucket +
+      '" zone, which historically ran <b>' + pct(cf.mean) + '</b> over the next ' + h + unit +
+      ', <b>below</b> the all-weeks average of ' + pct(base.mean) + '.';
+  }
+
+  return '<section class="card"><h2>Where gold sits · forward returns by zone</h2>' +
+    '<table><thead><tr><th>Zone</th><th>Next ' + h + unit + '</th><th>Win</th><th>n</th></tr></thead>' +
+    '<tbody>' + rows +
+    '<tr><td><b>Any week</b><br><small style="color:var(--dim)">baseline</small></td>' +
+      '<td><b>' + pct(base.mean) + '</b></td><td>' + base.win + '%</td>' +
+      '<td style="color:var(--dim)">' + base.n + '</td></tr>' +
+    '</tbody></table>' +
+    '<div class="verdictline">' + note +
+    '<br>Shallow dips near the highs beat deep ones by a wide margin — on gold, ' +
+    'buying weakness has been the worse trade. Windows overlap, so treat these as a ' +
+    'description of the record rather than a significance test.</div></section>';
 }
 
 function heatmap(s){
