@@ -58,6 +58,21 @@
   }
   .stale b{color:var(--gold)}
   .fresh{font-size:11px;color:var(--dim);text-align:center;margin-bottom:12px}
+  .hdr{display:flex;align-items:center;gap:8px;flex:none}
+  .refresh{
+    background:var(--card);border:1px solid var(--line);color:var(--dim);
+    width:38px;height:38px;border-radius:10px;font-size:17px;line-height:1;
+    cursor:pointer;flex:none
+  }
+  .refresh:active{opacity:.6}
+  .refresh[data-busy="1"]{color:var(--gold);animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .toast{
+    position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    background:var(--card2);color:var(--txt);border:1px solid var(--line);
+    padding:11px 16px;border-radius:10px;font-size:13px;z-index:9;
+    box-shadow:0 6px 24px rgba(0,0,0,.45);max-width:88vw;text-align:center
+  }
   .verdict{
     border-radius:18px;padding:26px 20px;text-align:center;
     background:var(--card);border:1px solid var(--line);position:relative;overflow:hidden
@@ -134,9 +149,13 @@
 <body>
 <header>
   <h1>GOLD <span>DOCTOR</span> SIGNAL</h1>
-  <div class="tf" id="tf">
-    <button type="button" data-k="weekly" aria-pressed="true">Weekly</button>
-    <button type="button" data-k="daily" aria-pressed="false">Daily</button>
+  <div class="hdr">
+    <div class="tf" id="tf">
+      <button type="button" data-k="weekly" aria-pressed="true">Weekly</button>
+      <button type="button" data-k="daily" aria-pressed="false">Daily</button>
+    </div>
+    <button type="button" id="refresh" class="refresh" title="Pull the latest published data"
+      aria-label="Refresh">&#10227;</button>
   </div>
 </header>
 
@@ -175,13 +194,52 @@ function F(n, d){
 }
 function pct(n){ return n === null || n === undefined ? '–' : (n > 0 ? '+' : '') + F(n) + '%'; }
 
-fetch('data.json?' + Date.now())
-  .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
-  .then(function(d){ DATA = d; render(); })
-  .catch(function(e){
-    document.getElementById('app').innerHTML =
-      '<div class="err">Could not load data.json (' + e + ').<br>The updater may not have run yet.</div>';
-  });
+function toast(msg){
+  var t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(function(){ t.remove(); }, 3600);
+}
+
+function pull(announce){
+  var btn = document.getElementById('refresh');
+  if (btn && btn.dataset.busy === '1') return;
+  if (btn) btn.dataset.busy = '1';
+  var before = DATA ? DATA.generated : 0;
+  // cache: 'no-store' plus a cache-busting query, because the CDN will happily
+  // serve the copy this page already has otherwise.
+  return fetch('data.json?t=' + Date.now(), {cache: 'no-store'})
+    .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
+    .then(function(d){
+      DATA = d;
+      render();
+      if (announce){
+        // The page can only re-pull what the builder last published; it cannot
+        // rebuild it. Say which of those happened rather than implying a fetch
+        // of live market data.
+        var age = Math.round((Date.now() / 1000 - d.generated) / 60);
+        toast(d.generated > before
+          ? 'Updated \u2014 new data from ' + (age < 60 ? age + ' min' : Math.round(age / 60) + ' h') + ' ago'
+          : 'Already current \u2014 nothing new published since the last rebuild');
+      }
+    })
+    .catch(function(e){
+      if (announce) toast('Refresh failed (' + e + ')');
+      else document.getElementById('app').innerHTML =
+        '<div class="err">Could not load data.json (' + e + ').<br>The updater may not have run yet.</div>';
+    })
+    .then(function(){ if (btn) btn.dataset.busy = '0'; });
+}
+
+pull(false);
+
+document.getElementById('refresh').addEventListener('click', function(){ pull(true); });
+
+// Coming back to the tab after a while should not show a stale page silently.
+document.addEventListener('visibilitychange', function(){
+  if (!document.hidden && DATA && (Date.now() / 1000 - DATA.generated) > 3600) pull(false);
+});
 
 document.getElementById('tf').addEventListener('click', function(e){
   var b = e.target.closest('button');
