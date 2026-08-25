@@ -73,6 +73,17 @@
     padding:11px 16px;border-radius:10px;font-size:13px;z-index:9;
     box-shadow:0 6px 24px rgba(0,0,0,.45);max-width:88vw;text-align:center
   }
+  .prices{margin-top:18px;display:flex;flex-direction:column;gap:8px}
+  .prow{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    background:var(--card2);border:1px solid var(--line);border-radius:12px;
+    padding:11px 14px;text-align:left
+  }
+  .prow.bull{border-color:rgba(34,197,94,.45);background:rgba(34,197,94,.10)}
+  .prow .lbl{font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
+  .prow .sub2{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .prow .val{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+  .spread{font-size:11px;color:var(--dim);text-align:center;margin-top:8px}
   .verdict{
     border-radius:18px;padding:26px 20px;text-align:center;
     background:var(--card);border:1px solid var(--line);position:relative;overflow:hidden
@@ -275,10 +286,7 @@ function render(){
       '<div class="sub">' + KEY + ' &middot; ' +
         (s.asOf ? 'as of ' + fmtDate(s.asOf) + ' close' : 'gold') +
         (s.raw !== s.verdict ? ' &middot; MACD alone said ' + s.raw : '') + '</div>' +
-      '<div class="price">$' + F(DATA.spot) + '</div>' +
-      '<div class="chg ' + (chg >= 0 ? 'up' : 'down') + '">' +
-        (chg >= 0 ? '▲ ' : '▼ ') + F(Math.abs(chg)) +
-        ' (' + (cp >= 0 ? '+' : '−') + F(Math.abs(cp)) + '%) this ' + bar + '</div>' +
+      priceRows(s, bar, chg, cp) +
       '<div class="flags">' + regimeFlag + flags + provisionalFlag(s) + '</div>' +
       '<div class="why">' + s.why + '</div>' +
     '</section>' +
@@ -331,7 +339,7 @@ function render(){
   document.getElementById('rule').innerHTML =
     'MACD <b>' + p.fast + '/' + p.slow + '/' + p.signal + '</b> on close, vetoed by the <b>' +
     p.ma + '-bar MA</b>, flagged by <b>RSI ' + p.rsi + '</b> · ' +
-    'data from Yahoo Finance · rebuilt by GitHub Actions';
+    'signal computed on COMEX futures (Yahoo Finance); spot bullion shown for reference only \u00b7 rebuilt by GitHub Actions';
   var when = new Date(DATA.generated * 1000);
   document.getElementById('meta').textContent = s.source + ' · updated ' +
     when.toLocaleString('en-US', {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
@@ -378,6 +386,41 @@ function trackRecord(s, bar){
     ' of them profitable, averaging ' + pct(pos.avg) + ' over ' + pos.avgBars + ' ' + bar + 's ' +
     '(best ' + pct(pos.best) + ', worst ' + pct(pos.worst) + ').' + '<br><br>Signals are filled one bar after they fire, because the close that produces a signal is not known until the bar has closed. Filling on the signal bar itself flatters the weekly position rule by 1.4 points of CAGR. No commission or spread is modelled.</div>' +
     '</section>';
+}
+
+function priceRows(s, bar, chg, cp){
+  var b = DATA.bullion;
+  var chgHtml = '<div class="chg ' + (chg >= 0 ? 'up' : 'down') + '">' +
+    (chg >= 0 ? '\u25b2 ' : '\u25bc ') + F(Math.abs(chg)) +
+    ' (' + (cp >= 0 ? '+' : '\u2212') + F(Math.abs(cp)) + '%) in the ' + bar +
+    ' to ' + fmtDate(s.asOf) + '</div>';
+
+  var rows =
+    '<div class="prow">' +
+      '<div><div class="lbl">Futures</div>' +
+        '<div class="sub2">' + (s.source || 'COMEX') + ' \u00b7 front month</div></div>' +
+      '<div class="val">$' + F(DATA.spot) + '</div>' +
+    '</div>';
+
+  if (b && b.price){
+    rows +=
+      '<div class="prow bull">' +
+        '<div><div class="lbl" style="color:var(--buy)">Bullion</div>' +
+          '<div class="sub2">spot XAU/USD \u00b7 ' + esc(b.source) + '</div></div>' +
+        '<div class="val" style="color:var(--buy)">$' + F(b.price) + '</div>' +
+      '</div>';
+  }
+
+  // The gap is the interesting part: it is the future's financing premium, not
+  // a disagreement between the two feeds.
+  var spread = (b && b.premium !== undefined && b.premium !== null)
+    ? '<div class="spread">Futures trade ' +
+        (b.premium >= 0 ? '+' : '') + F(b.premium) + '% ' +
+        (b.premium >= 0 ? 'above' : 'below') + ' spot \u2014 $' +
+        F(Math.abs(DATA.spot - b.price), 0) + ' of carry</div>'
+    : '';
+
+  return '<div class="prices">' + rows + '</div>' + spread + chgHtml;
 }
 
 function freshness(){

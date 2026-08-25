@@ -55,6 +55,16 @@ SOURCES = [
     ("GC=F", {"1wk": "30y", "1d": "10y"}),
     ("XAUUSD=X", {"1wk": "10y", "1d": "10y"}),
 ]
+# Spot bullion (XAU/USD), which is a different price from the COMEX future the
+# signal is built on -- the future carries a financing premium and currently
+# trades ~1.2% above spot. Two keyless sources, cross-checked: gold-api is a
+# plain JSON quote, Swissquote publishes its own dealable bid/ask. They agreed
+# to within 0.03% when this was wired up.
+SPOT_SOURCES = [
+    ("gold-api", "https://api.gold-api.com/price/XAU"),
+    ("Swissquote", "https://forex-data-feed.swissquote.com/public-quotes/"
+                   "bboquotes/instrument/XAU/USD"),
+]
 OUT = os.path.join(os.path.dirname(__file__), "..", "docs", "data.json")
 LEDGER = os.path.join(os.path.dirname(__file__), "..", "docs", "predictions.json")
 
@@ -91,6 +101,54 @@ def candles(result):
             continue
         out.append({"t": t, "c": c})
     return out
+
+
+# ---------------------------------------------------------------- spot bullion
+
+def _get_json(url, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout,
+                                context=ssl.create_default_context()) as r:
+        return json.load(r)
+
+
+def _parse_gold_api(d):
+    price = float(d["price"])
+    return price, d.get("updatedAt")
+
+
+def _parse_swissquote(d):
+    # A list of venues, each with spread profiles; take the tightest bid/ask mid.
+    best = None
+    for row in d:
+        for sp in row.get("spreadProfilePrices", []):
+            bid, ask = sp.get("bid"), sp.get("ask")
+            if bid and ask:
+                spread = ask - bid
+                if best is None or spread < best[0]:
+                    best = (spread, (bid + ask) / 2)
+    if best is None:
+        raise ValueError("no quotes")
+    return best[1], None
+
+
+PARSERS = {"gold-api": _parse_gold_api, "Swissquote": _parse_swissquote}
+
+
+def spot_bullion():
+    """Live XAU/USD. Display only -- every signal on the page is computed from
+    the COMEX future, which has the deep history the backtests need."""
+    errs = []
+    for name, url in SPOT_SOURCES:
+        try:
+            price, stamp = PARSERS[name](_get_json(url))
+            if not (100 < price < 100000):
+                raise ValueError(f"implausible price {price}")
+            return {"price": round(price, 2), "source": name, "quotedAt": stamp}
+        except Exception as exc:  # noqa: BLE001 - fall through to the next feed
+            errs.append(f"{name}: {exc}")
+    print(f"  spot bullion unavailable ({'; '.join(errs)})")
+    return None
 
 
 # ---------------------------------------------------------------- indicators
@@ -1026,8 +1084,16 @@ def main():
         s_.pop("_rows", None)
         s_.pop("_hist", None)
 
+    bullion = spot_bullion()
+    if bullion:
+        prem = (spot - bullion["price"]) / bullion["price"] * 100
+        bullion["premium"] = round(prem, 2)
+        print(f"  bullion {bullion['price']} via {bullion['source']} | "
+              f"future {spot} = {prem:+.2f}% premium")
+
     payload = {
         "generated": int(time.time()),
+        "bullion": bullion,
         "scorecard": {"weekly": scorecard(ledger, "weekly"),
                       "daily": scorecard(ledger, "daily")},
         "recent": _recent(ledger),

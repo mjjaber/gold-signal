@@ -137,6 +137,18 @@ def audit_output():
         check(f"{tf} projection anchors to the close it was measured from",
               near(d["anchor"][tf], s["last"], 0.01))
 
+    b = d.get("bullion")
+    if b:
+        # Spot and the front future track each other closely. A feed that has
+        # broken, stalled, or switched units shows up as an implausible gap long
+        # before anyone notices the number on the page is wrong.
+        gap = abs(b["price"] - d["spot"]) / d["spot"] * 100
+        check("spot bullion within 5% of the front future", gap < 5,
+              f"bullion {b['price']} vs future {d['spot']} = {gap:.2f}% via {b['source']}")
+        check("bullion price is plausible", 100 < b["price"] < 100000)
+    else:
+        print("  WARN  no bullion quote in this build")
+
     print("\n=== ledger ===")
     live = [e for e in led["entries"] if not e.get("backfilled")]
     # The invariant that matters is that an entry's price IS the close of the bar

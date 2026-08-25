@@ -278,6 +278,29 @@ Tuning lives in the constants at the top of `scripts/build_data.py`: `FAST/SLOW/
 `MA_LEN`, `RSI_LEN`, `RSI_HOT/RSI_COLD`. The page reads them out of `data.json`, so the
 footer and the labels follow along automatically.
 
+## Futures vs bullion
+
+The verdict card shows two prices stacked: the COMEX front-month future and spot bullion
+(XAU/USD). They are genuinely different numbers — the future currently trades about 1.25%
+above spot, which is financing carry, not a disagreement between feeds.
+
+**Every signal on the page is computed from the future**, because that is the series with
+25 years of clean weekly history behind it. The bullion quote is displayed for reference.
+
+Sources, after testing what actually works:
+
+| Source | Status |
+|---|---|
+| `api.gold-api.com` | **primary** — keyless JSON, refreshes each minute |
+| Swissquote public quotes | **fallback** — a broker's own dealable bid/ask, mid taken |
+| Yahoo `XAUUSD=X` | rejected — returns a null result consistently |
+| goldprice.org | rejected — 403 |
+
+The two working feeds were cross-checked against each other and agreed to within 0.03%
+($4,648.50 vs a $4,646.99 mid). `audit.py` now asserts the bullion quote stays within 5% of
+the front future, so a feed that stalls or switches units fails the build instead of
+quietly publishing a wrong number.
+
 ## Accuracy audit
 
 `scripts/audit.py` runs after every build (and in CI, before anything is committed) and
