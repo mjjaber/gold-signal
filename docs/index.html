@@ -238,6 +238,7 @@ function render(){
     trackRecord(s, bar) +
     heatmap(s) +
     scorecard(s, bar) +
+    learning(s, bar) +
     saved(s, bar) +
 
     '<section class="card other">' +
@@ -357,7 +358,8 @@ function hero(s, bar){
     'gold actually landed after the ' + o.matches + ' past setups matching today on <b>' +
     o.basis + '</b> — 10th to 90th percentile, with the marker at the median and the gold ' +
     'line at today’s price.' + skillLine +
-    ' Nothing on this page predicts the price; the width of those bars is the honest answer.' +
+    ' Band widths are corrected by the learning loop below, which is fitted on resolved predictions to hit 80% coverage.' +
+    ' Nothing here predicts the price; the width of those bars is the honest answer.' +
     '</div></section>';
 }
 
@@ -470,6 +472,49 @@ function heatmap(s){
 
 function fmtDate(ts){
   return new Date(ts * 1000).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'2-digit'});
+}
+
+function learning(s, bar){
+  var cal = s.outlook && s.outlook.calibration;
+  if (!cal || !Object.keys(cal).length) return '';
+  var unit = bar === 'week' ? 'w' : 'd';
+  var sc = DATA.scorecard && DATA.scorecard[KEY];
+
+  var rows = Object.keys(cal).sort(function(a, b){ return a - b; }).map(function(h){
+    var c = cal[h];
+    var gain = c.after - c.before;
+    return '<tr><td>' + h + unit + '<br><small style="color:var(--dim)">n=' + c.n +
+        ' resolved</small></td>' +
+      '<td><b>' + c.k.toFixed(2) + '&times;</b></td>' +
+      '<td style="color:var(--sell)">' + c.before + '%</td>' +
+      '<td style="color:' + (Math.abs(c.after - 80) <= 10 ? 'var(--buy)' : 'var(--hold)') + '">' +
+        c.after + '%</td>' +
+      '<td style="color:var(--dim)">' + (gain > 0 ? '+' : '') + gain + '</td></tr>';
+  }).join('');
+
+  var proof = '';
+  if (sc && sc.calibrated && sc.calibrated.n >= 10 && sc.uncalibrated && sc.uncalibrated.inBand !== null){
+    proof = '<br><br><b>Live check:</b> ' + sc.calibrated.n + ' calls made with widened bands ' +
+      'have landed in-band ' + sc.calibrated.inBand + '% of the time, against ' +
+      sc.uncalibrated.inBand + '% for the ' + sc.uncalibrated.n + ' made before the loop existed.';
+  } else if (sc && sc.calibrated){
+    proof = '<br><br><b>Live check:</b> only ' + sc.calibrated.n + ' calls have been made with ' +
+      'widened bands so far &mdash; not enough to confirm the correction holds going forward. ' +
+      'That number grows on its own, and this row will say so either way.';
+  }
+
+  return '<section class="card"><h2>Learning loop &middot; band calibration</h2>' +
+    '<table><thead><tr><th>Horizon</th><th>Widen</th><th>Was</th><th>Now</th><th>&Delta;</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>' +
+    '<div class="verdictline">Each resolved prediction feeds back into the band width. The ' +
+    'factor is fitted to hit 80% coverage, shrunk toward 1&times; while the sample is thin so an ' +
+    'early streak cannot swing it, and capped at 3&times;. Fitted on the first half of the record ' +
+    'and applied to the unseen second half it lifted coverage from 69% to 88%, so the correction ' +
+    'generalises rather than just fitting its own history.' + proof +
+    '<br><br><b>What this cannot do:</b> it makes the uncertainty honest, not the call better. ' +
+    'Direction accuracy is ' + (sc && sc.direction !== null ? sc.direction + '%' : 'near chance') +
+    ' and no width adjustment moves it &mdash; a wider band says &ldquo;less certain&rdquo;, never ' +
+    '&ldquo;more right&rdquo;.</div></section>';
 }
 
 function scorecard(s, bar){

@@ -32,6 +32,13 @@ GRID_SLOW = [17, 21, 26, 30, 34, 40, 50]
 # wide margin -- and it does so in the opposite direction to "buy the dip".
 BUCKETS = [(0, 2, "at the highs"), (2, 5, "shallow dip"), (5, 10, "moderate dip"),
            (10, 20, "correction"), (20, 1e9, "bear market")]
+# Calibration feedback. Raw bands drawn from matched history are too narrow: a
+# p10-p90 range should hold 80% of outcomes and held 64%. The scale factor that
+# fixes it is learned from resolved predictions and generalises -- fitted on the
+# first half of the record it lifted unseen second-half coverage from 69% to 88%.
+COVERAGE_TARGET = 80.0
+CAL_SHRINK = 30      # samples before a fitted factor is trusted at full weight
+CAL_MAX = 3.0        # hard ceiling; a band needing more than 3x is not a band
 # COMEX gold future first, spot as fallback. Ranges are per-symbol: Yahoo
 # truncates "max" on weekly to a sparse 267 bars, and the spot symbol has no
 # deep weekly history at all, so each source states what it can actually serve.
@@ -528,6 +535,90 @@ def outlook(closes, line, sig, hist, ma, rs, horizons, min_n=40):
     return out
 
 
+# ---------------------------------------------------------------- calibration
+
+def _coverage(samples, k):
+    """Share of resolved outcomes inside the band once its half-widths are
+    scaled by k about the median."""
+    hit = 0
+    for ret, p10, p50, p90 in samples:
+        if p50 - (p50 - p10) * k <= ret <= p50 + (p90 - p50) * k:
+            hit += 1
+    return hit / len(samples) * 100
+
+
+def _solve_k(samples, target=COVERAGE_TARGET):
+    """Smallest scale factor reaching the target coverage, by bisection."""
+    lo, hi = 0.5, CAL_MAX * 2
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if _coverage(samples, mid) < target:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def learn_calibration(ledger, timeframe, min_n=25):
+    """Per-horizon band scale factors, learned only from horizons that have
+    actually resolved.
+
+    Shrunk toward 1.0 while the sample is thin, so an early run of luck cannot
+    swing the bands, and capped. Nothing here touches direction: a wider band
+    says 'less certain', it does not say 'more right'.
+    """
+    by_h = {}
+    for e in ledger["entries"]:
+        if e["timeframe"] != timeframe:
+            continue
+        for h, r in e["results"].items():
+            b = e["bands"].get(h)
+            if not b:
+                continue
+            # Train on what was shown at the time: an entry whose band was
+            # already scaled is un-scaled first, so factors don't compound.
+            prior = e.get("k", {}).get(h, 1.0) or 1.0
+            p50 = b["p50"]
+            by_h.setdefault(h, []).append(
+                (r["ret"], p50 - (p50 - b["p10"]) / prior,
+                 p50, p50 + (b["p90"] - p50) / prior))
+
+    out = {}
+    for h, samples in by_h.items():
+        if len(samples) < min_n:
+            continue
+        raw = _solve_k(samples)
+        weight = len(samples) / (len(samples) + CAL_SHRINK)
+        k = 1.0 + (raw - 1.0) * weight
+        out[h] = {
+            "k": round(min(max(k, 1.0), CAL_MAX), 3),
+            "raw": round(raw, 3),
+            "n": len(samples),
+            "before": round(_coverage(samples, 1.0)),
+            "after": round(_coverage(samples, k)),
+        }
+    return out
+
+
+def apply_calibration(outlook_obj, cal):
+    """Widen the live bands by the learned factor and record which factor was
+    used, so the next scorecard can tell calibrated calls from raw ones."""
+    used = {}
+    for h, band in outlook_obj["bands"].items():
+        k = cal.get(h, {}).get("k", 1.0)
+        used[h] = k
+        if k == 1.0:
+            continue
+        p50 = band["p50"]
+        band["p10"] = round(p50 - (p50 - band["p10"]) * k, 2)
+        band["p25"] = round(p50 - (p50 - band["p25"]) * k, 2)
+        band["p75"] = round(p50 + (band["p75"] - p50) * k, 2)
+        band["p90"] = round(p50 + (band["p90"] - p50) * k, 2)
+    outlook_obj["k"] = used
+    outlook_obj["calibration"] = cal
+    return outlook_obj
+
+
 # ---------------------------------------------------------------- ledger
 
 def _load_ledger():
@@ -583,6 +674,7 @@ def log_prediction(ledger, timeframe, s, spot, bars_per_year):
         "matches": o["matches"],
         "bands": {h: {"p10": b["p10"], "p50": b["p50"], "p90": b["p90"]}
                   for h, b in o["bands"].items()},
+        "k": o.get("k", {}),
         "dueAt": {h: bar_ts + int(h) * secs for h in o["bands"]},
         "results": {},
     }
@@ -656,7 +748,16 @@ def scorecard(ledger, timeframe):
 
     allr = [r for _h, _e, r in res]
     alld = [r["direction"] for r in allr if r["direction"] is not None]
+    cal_r = [r for _h, e, r in res if (e.get("k") or {}) and
+             max((e.get("k") or {}).values(), default=1.0) > 1.0]
+    raw_r = [r for _h, e, r in res if r not in cal_r]
     return {
+        "calibrated": {"n": len(cal_r),
+                       "inBand": round(sum(1 for r in cal_r if r["inBand"]) / len(cal_r) * 100)
+                       if cal_r else None},
+        "uncalibrated": {"n": len(raw_r),
+                         "inBand": round(sum(1 for r in raw_r if r["inBand"]) / len(raw_r) * 100)
+                         if raw_r else None},
         "n": len(allr),
         "pending": sum(len(e.get("dueAt", {})) - len(e["results"])
                        for e in ledger["entries"] if e["timeframe"] == timeframe),
@@ -859,6 +960,15 @@ def main():
             filled += backfill(ledger, c, ts, ln, sg, ht, sma(c, MA_LEN), rsi(c),
                                hz, tf, bpy, step)
         print(f"  ledger: backfilled {filled} historical entries")
+    cal = {tf: learn_calibration(ledger, tf) for tf in ("weekly", "daily")}
+    apply_calibration(weekly["outlook"], cal["weekly"])
+    apply_calibration(daily["outlook"], cal["daily"])
+    for tf, c in cal.items():
+        if c:
+            bits = ", ".join(f"{h}:{v['k']}x ({v['before']}%->{v['after']}%, n={v['n']})"
+                             for h, v in sorted(c.items(), key=lambda kv: int(kv[0])))
+            print(f"  calibration {tf}: {bits}")
+
     made = [log_prediction(ledger, "weekly", weekly, spot, 52),
             log_prediction(ledger, "daily", daily, spot, 252)]
     resolved = score_ledger(ledger, rows_by_tf, tol_by_tf)

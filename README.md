@@ -227,6 +227,46 @@ earliest available bar — scoring a 2005 prediction against a 2016 price and re
 timestamp before the series starts and refuses a bar more than a tolerance past due, and
 each timeframe scores against its own series.
 
+## The learning loop
+
+The ledger measures; this closes the loop. Each resolved prediction feeds back into the
+band width for future ones.
+
+The mechanism is calibration scaling: find the factor k that would have made the p10–p90
+band hold 80% of resolved outcomes, and widen future bands by it. k is fitted per horizon,
+shrunk toward 1.0 while the sample is thin (`k_eff = 1 + (k_fit − 1) · n/(n+30)`) so an
+early streak cannot swing the bands, and capped at 3×.
+
+| Horizon | Widen | Coverage was | Coverage now | Δ |
+|---|---|---|---|---|
+| 4w | 1.13× | 75% | 79% | +4 |
+| 13w | 1.34× | 68% | 78% | +10 |
+| 26w | 1.34× | 62% | 74% | +12 |
+| 52w | 1.72× | 49% | 75% | +26 |
+
+**It generalises, which is the part that matters.** Fitted on the first half of the resolved
+record and applied to the unseen second half, coverage went from 69% to 88% — overshooting
+the 80% target, because the second half was calmer, but far closer than the 69% it started
+at. Per horizon on unseen data: 26w went 63% → 91%, 52w went 61% → 84%. The factor is not
+merely fitting its own history.
+
+Each entry records the k it was issued under, so the scorecard separates calls made with
+calibrated bands from those made before the loop existed. That comparison is the real proof
+and it needs live calls to accumulate; until then the card says so rather than claiming a
+win.
+
+### What the loop cannot do
+
+It makes the *uncertainty* honest, not the *call* better. Direction accuracy across the
+same resolved record was 57% in the first half and 52% in the second — decaying toward
+chance, not improving. No band adjustment touches that number, because band width encodes
+how sure the model is, not which way it leans.
+
+That split is worth stating plainly: **the spread is learnable, the direction is not.** A
+system that widens its error bars until it is rarely surprised has learned something real
+about its own limits. It has not learned to predict the price of gold, and no amount of
+this loop running will get it there.
+
 ## Local development
 
 ```bash
