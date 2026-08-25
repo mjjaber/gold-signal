@@ -101,6 +101,22 @@
   .heat td.na{background:transparent}
   .heat td.live{outline:2px solid var(--gold);outline-offset:-2px;color:#0d0f14}
   .axis{font-size:10.5px;color:var(--dim);text-align:center;margin-top:8px;letter-spacing:.5px}
+  .btn{
+    display:inline-block;background:var(--card2);color:var(--txt);border:1px solid var(--line);
+    font:600 13px/1 inherit;padding:11px 15px;border-radius:10px;cursor:pointer
+  }
+  .btn.primary{background:var(--gold);color:#0d0f14;border-color:var(--gold)}
+  .btn:active{opacity:.7}
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .log{list-style:none}
+  .log li{padding:11px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .log li:last-child{border-bottom:0}
+  .log .top{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+  .log .when{color:var(--dim);font-size:11.5px}
+  .log .res{margin-top:5px;color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
+  .tag{font-size:9.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
+    padding:2px 6px;border-radius:4px;background:var(--card2);color:var(--dim);margin-left:6px}
+  .ok{color:var(--buy)} .bad{color:var(--sell)} .pend{color:var(--hold)}
   .other{display:flex;align-items:center;justify-content:space-between;gap:12px}
   .pill{font-weight:700;font-size:14px;padding:6px 13px;border-radius:999px;background:var(--card2)}
   footer{margin-top:20px;color:var(--dim);font-size:11.5px;line-height:1.6;text-align:center}
@@ -221,6 +237,8 @@ function render(){
     proximity(s, bar) +
     trackRecord(s, bar) +
     heatmap(s) +
+    scorecard(s, bar) +
+    saved(s, bar) +
 
     '<section class="card other">' +
       '<div><div style="font-size:11.5px;color:var(--dim);letter-spacing:1.1px;text-transform:uppercase">' +
@@ -447,6 +465,164 @@ function heatmap(s){
       (g.liveRank <= g.n / 3 ? 'near the top of the range.'
         : g.liveRank >= g.n * 2 / 3 ? 'near the bottom of the range.'
         : 'squarely mid-pack, which is what a non-special setting looks like.') +
+    '</div></section>';
+}
+
+function fmtDate(ts){
+  return new Date(ts * 1000).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'2-digit'});
+}
+
+function scorecard(s, bar){
+  var sc = DATA.scorecard && DATA.scorecard[KEY];
+  if (!sc || !sc.n) return '';
+  var unit = bar === 'week' ? 'w' : 'd';
+
+  var rows = Object.keys(sc.horizons).sort(function(a, b){ return a - b; }).map(function(h){
+    var v = sc.horizons[h];
+    var off = Math.abs(v.inBand - 80);
+    return '<tr><td>' + h + unit + '<br><small style="color:var(--dim)">n=' + v.n + '</small></td>' +
+      '<td style="color:' + (off <= 10 ? 'var(--buy)' : off <= 20 ? 'var(--hold)' : 'var(--sell)') + '">' +
+        v.inBand + '%</td>' +
+      '<td>' + (v.direction === null ? '&ndash;' : v.direction + '%') + '</td>' +
+      '<td style="color:var(--dim)">' + (v.medianError > 0 ? '+' : '') + v.medianError + '</td>' +
+      '<td style="color:var(--dim)">' + v.meanAbsError + '</td></tr>';
+  }).join('');
+
+  var band = sc.inBand;
+  var read;
+  if (band < 70){
+    read = 'The bands are <b>too narrow</b>. A calibrated 10th&ndash;90th range should swallow ' +
+      'about 80% of outcomes; these caught <b>' + band + '%</b>, so gold moved outside the ' +
+      'projected range far more often than the model expected &mdash; and it worsens with horizon.';
+  } else if (band > 90){
+    read = 'The bands are <b>too wide</b> &mdash; they caught ' + band + '% where 80% is the ' +
+      'target, so they are technically right and practically useless.';
+  } else {
+    read = 'The bands are <b>reasonably calibrated</b>: they caught ' + band +
+      '% of outcomes against an 80% target.';
+  }
+
+  var dirRead = sc.direction === null ? '' :
+    ' Directional calls landed <b>' + sc.direction + '%</b> of the time across ' +
+    sc.directionN + ' resolved BUY/SELL calls' +
+    (sc.direction < 56 ? ', which is coin-flip territory.' : '.');
+
+  return '<section class="card"><h2>Prediction scorecard &middot; ' + sc.n + ' resolved</h2>' +
+    '<table><thead><tr><th>Horizon</th><th>In band</th><th>Direction</th><th>Med err</th>' +
+    '<th>Avg err</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<div class="verdictline">' + read + dirRead +
+    '<br><br>Every call is logged automatically when the data rebuilds, and each horizon scores ' +
+    'itself once its date arrives, so this record cannot be curated after the fact. Entries ' +
+    'dated before today are a causal replay &mdash; the bands at each past bar were built only ' +
+    'from data available at that bar. ' + sc.pending + ' horizons are still pending.' +
+    '</div></section>';
+}
+
+/* ---- manual saves, kept on this device ---- */
+var LS = 'goldsignal.saved.v1';
+
+function loadSaved(){
+  try { return JSON.parse(localStorage.getItem(LS)) || []; } catch (e){ return []; }
+}
+function writeSaved(a){
+  try { localStorage.setItem(LS, JSON.stringify(a)); } catch (e){}
+}
+
+function savePrediction(){
+  var s = DATA[KEY], o = s.outlook;
+  var all = loadSaved();
+  var barTs = s.candles[s.candles.length - 1].t;
+  if (all.some(function(x){ return x.timeframe === KEY && x.barTs === barTs; })){
+    alert('This ' + KEY + ' bar is already saved.');
+    return;
+  }
+  var secs = Math.round(365.25 * 24 * 3600 / (KEY === 'weekly' ? 52 : 252));
+  var due = {};
+  Object.keys(o.bands).forEach(function(h){ due[h] = barTs + parseInt(h, 10) * secs; });
+  all.push({
+    timeframe: KEY, barTs: barTs, made: Math.floor(Date.now() / 1000),
+    spot: DATA.spot, verdict: s.verdict, bucket: o.bucket,
+    bands: o.bands, dueAt: due, results: {}
+  });
+  writeSaved(all);
+  render();
+}
+
+function checkSaved(){
+  var all = loadSaved(), now = Math.floor(Date.now() / 1000), n = 0;
+  all.forEach(function(e){
+    Object.keys(e.dueAt).forEach(function(h){
+      // Only horizons whose date has actually passed resolve, and a resolved
+      // horizon is never rewritten.
+      if (e.results[h] || e.dueAt[h] > now) return;
+      var ret = (DATA.spot - e.spot) / e.spot * 100;
+      var b = e.bands[h];
+      e.results[h] = {
+        actual: DATA.spot, ret: Math.round(ret * 100) / 100, at: now,
+        inBand: ret >= b.p10 && ret <= b.p90,
+        direction: e.verdict === 'BUY' ? ret > 0 : e.verdict === 'SELL' ? ret < 0 : null,
+        error: Math.round((ret - b.p50) * 100) / 100
+      };
+      n++;
+    });
+  });
+  writeSaved(all);
+  render();
+  alert(n ? 'Resolved ' + n + ' horizon' + (n === 1 ? '' : 's') + '.'
+          : 'Nothing is due yet. Check back once a horizon date passes.');
+}
+
+function deleteSaved(i){
+  var all = loadSaved();
+  all.splice(i, 1);
+  writeSaved(all);
+  render();
+}
+
+function entryLine(e, unit, mine){
+  var due = Object.keys(e.dueAt).sort(function(a, b){ return a - b; });
+  var parts = due.map(function(h){
+    var r = e.results[h];
+    if (!r) return '<span class="pend">' + h + unit + ' due ' + fmtDate(e.dueAt[h]) + '</span>';
+    return '<span class="' + (r.inBand ? 'ok' : 'bad') + '">' + h + unit + ' ' +
+      (r.ret > 0 ? '+' : '') + r.ret.toFixed(1) + '% ' +
+      (r.inBand ? 'in band' : 'outside band') +
+      (r.direction === null ? '' : r.direction ? ' &middot; called right' : ' &middot; called wrong') +
+      '</span>';
+  });
+  var tag = e.backfilled ? '<span class="tag">replay</span>'
+          : mine ? '<span class="tag">saved</span>' : '';
+  return '<div class="top"><b style="color:' + COLOR[e.verdict] + '">' + e.verdict + '</b>' +
+      '<span class="when">$' + F(e.spot, 0) + ' &middot; ' + fmtDate(e.barTs) + tag + '</span></div>' +
+    '<div class="res">' + parts.join('<br>') + '</div>';
+}
+
+function saved(s, bar){
+  var unit = bar === 'week' ? 'w' : 'd';
+  var mine = loadSaved().filter(function(e){ return e.timeframe === KEY; });
+  var auto = (DATA.recent || []).filter(function(e){ return e.timeframe === KEY; }).slice(0, 6);
+
+  var mineHtml = mine.length
+    ? '<ul class="log">' + mine.map(function(e, i){
+        return '<li>' + entryLine(e, unit, true) +
+          '<div style="margin-top:6px"><a href="#" onclick="deleteSaved(' + i +
+          ');return false" style="color:var(--dim);font-size:11.5px">remove</a></div></li>';
+      }).join('') + '</ul>'
+    : '<div style="color:var(--dim);font-size:13px">Nothing saved on this device yet. ' +
+      'Saving pins the current call and its bands so you can score them later.</div>';
+
+  return '<section class="card"><h2>Save &amp; verify</h2>' + mineHtml +
+    '<div class="btnrow">' +
+      '<button type="button" class="btn primary" onclick="savePrediction()">Save this ' +
+        KEY + ' call</button>' +
+      '<button type="button" class="btn" onclick="checkSaved()">Check what is due</button>' +
+    '</div>' +
+    (auto.length ? '<h2 style="margin-top:22px">Auto-logged calls</h2><ul class="log">' +
+      auto.map(function(e){ return '<li>' + entryLine(e, unit, false) + '</li>'; }).join('') +
+      '</ul>' : '') +
+    '<div class="verdictline">Saved calls live in this browser only. The auto-logged ledger is ' +
+    'committed to the repo on every rebuild and is the one that counts &mdash; it records every ' +
+    'call whether it turns out well or badly, which a button you press by choice cannot.' +
     '</div></section>';
 }
 

@@ -1,0 +1,59 @@
+# Scheduler for the data rebuild and the prediction ledger.
+#
+# This file lives here rather than in .github/workflows/ because pushing into
+# that directory needs a token with the `workflow` scope. To activate:
+#
+#   gh auth refresh -h github.com -s workflow
+#   mkdir -p .github/workflows
+#   cp scripts/github-workflow.yml .github/workflows/update.yml
+#   git add .github/workflows/update.yml && git commit -m "Enable scheduler" && git push
+#
+name: Update gold signal
+
+on:
+  schedule:
+    # 22:10 UTC on weekdays — after the COMEX close, so the daily candle is final.
+    - cron: "10 22 * * 1-5"
+    # Saturday morning UTC — locks in the completed weekly candle.
+    - cron: "10 2 * * 6"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "docs/index.html"
+      - ".github/workflows/update.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-signal
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rebuild data and score the ledger
+        run: python scripts/build_data.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # predictions.json is the append-only record; it must be committed with
+          # the data or a prediction is logged and then lost on the next run.
+          git add docs/data.json docs/predictions.json
+          if git diff --staged --quiet; then
+            echo "no change"
+          else
+            git commit -m "data: refresh gold signal and score predictions"
+            git push
+          fi

@@ -40,6 +40,7 @@ SOURCES = [
     ("XAUUSD=X", {"1wk": "10y", "1d": "10y"}),
 ]
 OUT = os.path.join(os.path.dirname(__file__), "..", "docs", "data.json")
+LEDGER = os.path.join(os.path.dirname(__file__), "..", "docs", "predictions.json")
 
 
 # ---------------------------------------------------------------- fetching
@@ -527,6 +528,232 @@ def outlook(closes, line, sig, hist, ma, rs, horizons, min_n=40):
     return out
 
 
+# ---------------------------------------------------------------- ledger
+
+def _load_ledger():
+    try:
+        with open(LEDGER, encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("entries"), list):
+                return data
+    except (OSError, ValueError):
+        pass
+    return {"entries": []}
+
+
+def _price_at(rows, ts, tol):
+    """Close on the first bar at or after ts, or None.
+
+    Returns None when ts falls before the series starts, and when the nearest
+    later bar is more than `tol` seconds past due. Without both guards a due date
+    outside the data silently resolves against the first available bar, which
+    scores a 2005 prediction against a 2016 price.
+    """
+    if not rows or ts < rows[0]["t"]:
+        return None, None
+    for row in rows:
+        if row["t"] >= ts:
+            return (row["c"], row["t"]) if row["t"] - ts <= tol else (None, None)
+    return None, None
+
+
+def log_prediction(ledger, timeframe, s, spot, bars_per_year):
+    """One entry per timeframe per bar. Re-running the build on the same bar
+    updates nothing -- the record is written once, when the call was live."""
+    bar_ts = s["candles"][-1]["t"]
+    key = f"{timeframe}-{bar_ts}"
+    if any(e["id"] == key for e in ledger["entries"]):
+        return None
+
+    secs = int(365.25 * 24 * 3600 / bars_per_year)
+    o = s["outlook"]
+    entry = {
+        "id": key,
+        "timeframe": timeframe,
+        "barTs": bar_ts,
+        "made": int(time.time()),
+        "spot": spot,
+        "verdict": s["verdict"],
+        "raw": s["raw"],
+        "notes": s["notes"],
+        "rsi": s["detail"]["rsi"],
+        "maGap": s["detail"]["maGap"],
+        "bucket": o["bucket"],
+        "basis": o["basis"],
+        "matches": o["matches"],
+        "bands": {h: {"p10": b["p10"], "p50": b["p50"], "p90": b["p90"]}
+                  for h, b in o["bands"].items()},
+        "dueAt": {h: bar_ts + int(h) * secs for h in o["bands"]},
+        "results": {},
+    }
+    ledger["entries"].append(entry)
+    return entry
+
+
+def score_ledger(ledger, rows_by_tf, tol_by_tf):
+    """Resolve every horizon whose due date has passed. Idempotent: a horizon
+    already scored is never rewritten, so the record can't drift."""
+    scored = 0
+    for e in ledger["entries"]:
+        rows = rows_by_tf.get(e["timeframe"])
+        if not rows:
+            continue
+        for h, due in e.get("dueAt", {}).items():
+            if h in e["results"]:
+                continue
+            price, at = _price_at(rows, due, tol_by_tf[e["timeframe"]])
+            if price is None:
+                continue
+            band = e["bands"][h]
+            ret = (price - e["spot"]) / e["spot"] * 100
+            up = e["verdict"] == "BUY"
+            down = e["verdict"] == "SELL"
+            e["results"][h] = {
+                "actual": round(price, 2),
+                "at": at,
+                "ret": round(ret, 2),
+                "inBand": band["p10"] <= ret <= band["p90"],
+                "vsMedian": "above" if ret > band["p50"] else "below",
+                # A HOLD makes no directional claim, so it is scored as such
+                # rather than being quietly counted as a win.
+                "direction": None if not (up or down) else ((ret > 0) == up),
+                "error": round(ret - band["p50"], 2),
+            }
+            scored += 1
+    return scored
+
+
+def scorecard(ledger, timeframe):
+    """How the calls have actually done. p10-p90 should contain ~80% of outcomes
+    if the bands are honest; far more means they are too wide to say anything."""
+    res = []
+    for e in ledger["entries"]:
+        if e["timeframe"] != timeframe:
+            continue
+        for h, r in e["results"].items():
+            res.append((h, e, r))
+    if not res:
+        return {"n": 0, "pending": sum(1 for e in ledger["entries"]
+                                       if e["timeframe"] == timeframe)}
+
+    by_h = {}
+    for h, _e, r in res:
+        by_h.setdefault(h, []).append(r)
+
+    horizons = {}
+    for h, rs in sorted(by_h.items(), key=lambda kv: int(kv[0])):
+        dirs = [r["direction"] for r in rs if r["direction"] is not None]
+        errs = sorted(r["error"] for r in rs)
+        horizons[h] = {
+            "n": len(rs),
+            "inBand": round(sum(1 for r in rs if r["inBand"]) / len(rs) * 100),
+            "aboveMedian": round(sum(1 for r in rs if r["vsMedian"] == "above") / len(rs) * 100),
+            "directionN": len(dirs),
+            "direction": round(sum(1 for d in dirs if d) / len(dirs) * 100) if dirs else None,
+            "medianError": round(errs[len(errs) // 2], 2),
+            "meanAbsError": round(sum(abs(x) for x in errs) / len(errs), 2),
+        }
+
+    allr = [r for _h, _e, r in res]
+    alld = [r["direction"] for r in allr if r["direction"] is not None]
+    return {
+        "n": len(allr),
+        "pending": sum(len(e.get("dueAt", {})) - len(e["results"])
+                       for e in ledger["entries"] if e["timeframe"] == timeframe),
+        "inBand": round(sum(1 for r in allr if r["inBand"]) / len(allr) * 100),
+        "direction": round(sum(1 for d in alld if d) / len(alld) * 100) if alld else None,
+        "directionN": len(alld),
+        "horizons": horizons,
+    }
+
+
+def _bands_at(closes, states, buckets, i, horizons, min_n=40):
+    """The outlook bands as they would have been computed standing at bar i.
+
+    Matching rows are drawn from j < i, and a match only contributes a forward
+    return for horizon h when j + h <= i -- i.e. when that outcome had already
+    happened. Nothing here can see past bar i.
+    """
+    here_state, here_bucket = states[i], buckets[i]
+    if here_state is None:
+        return None, None, 0
+    tiers = [
+        ("state and drawdown zone",
+         [j for j in range(i) if states[j] == here_state and buckets[j] == here_bucket]),
+        ("signal state alone", [j for j in range(i) if states[j] == here_state]),
+        ("the whole record", list(range(i))),
+    ]
+    basis, rows = tiers[-1]
+    for label, cand in tiers:
+        if len(cand) >= min_n:
+            basis, rows = label, cand
+            break
+
+    bands = {}
+    for h in horizons:
+        xs = sorted((closes[j + h] - closes[j]) / closes[j] * 100
+                    for j in rows if j + h <= i)
+        if len(xs) < 20:
+            continue
+        bands[str(h)] = {"p10": round(_pctile(xs, .10), 2),
+                         "p50": round(_pctile(xs, .50), 2),
+                         "p90": round(_pctile(xs, .90), 2)}
+    return bands, basis, len(rows)
+
+
+def backfill(ledger, closes, rows_ts, line, sig, hist, ma, rs, horizons,
+             timeframe, bars_per_year, step):
+    """Replay the app over history so the scorecard has something to say today.
+
+    Entries are marked backfilled so they are never mixed with live calls. The
+    bands are causal, but this is still a replay -- it tests whether the bands
+    are calibrated, not whether the app called anything in real time.
+    """
+    n = len(closes)
+    states = _series_states(closes, line, sig, hist, ma, rs)
+    peaks = _running_max(closes)
+    buckets = [_bucket_of((peaks[k] - closes[k]) / peaks[k] * 100) for k in range(n)]
+    secs = int(365.25 * 24 * 3600 / bars_per_year)
+    existing = {e["id"] for e in ledger["entries"]}
+    added = 0
+
+    start = next((k for k in range(n) if states[k] is not None), n) + 200
+    for i in range(start, n, step):
+        key = f"{timeframe}-{rows_ts[i]}"
+        if key in existing:
+            continue
+        bands, basis, matches = _bands_at(closes, states, buckets, i, horizons)
+        if not bands:
+            continue
+        ledger["entries"].append({
+            "id": key, "timeframe": timeframe, "barTs": rows_ts[i],
+            "made": rows_ts[i], "backfilled": True,
+            "spot": round(closes[i], 2), "verdict": states[i], "raw": states[i],
+            "notes": [], "rsi": round(rs[i], 1) if rs[i] is not None else None,
+            "maGap": round((closes[i] - ma[i]) / ma[i] * 100, 1) if ma[i] else None,
+            "bucket": buckets[i], "basis": basis, "matches": matches,
+            "bands": bands,
+            "dueAt": {h: rows_ts[i] + int(h) * secs for h in bands},
+            "results": {},
+        })
+        added += 1
+    return added
+
+
+def _recent(ledger, keep=14):
+    """A trimmed slice of the ledger for the page, newest first. The full record
+    stays in predictions.json."""
+    out = []
+    for e in sorted(ledger["entries"], key=lambda x: x["barTs"], reverse=True)[:keep]:
+        out.append({
+            "id": e["id"], "timeframe": e["timeframe"], "barTs": e["barTs"],
+            "backfilled": bool(e.get("backfilled")), "spot": e["spot"],
+            "verdict": e["verdict"], "bucket": e["bucket"],
+            "bands": e["bands"], "dueAt": e["dueAt"], "results": e["results"],
+        })
+    return out
+
+
 # ---------------------------------------------------------------- assembly
 
 def series(interval, points):
@@ -570,6 +797,7 @@ def series(interval, points):
             }
 
             keep = min(points, len(rows))
+            raw_rows = rows
             r3 = lambda v: None if v is None else round(v, 3)  # noqa: E731
             return {
                 "symbol": sym,
@@ -586,7 +814,9 @@ def series(interval, points):
                 "grid": sensitivity(closes, ma, test["hold"]["cagr"], bpy),
                 "proximity": proximity(closes, ma, 52 if interval == "1wk" else 252),
                 "outlook": outlook(closes, line, sig, hist, ma, rs,
-                                   [13, 26, 52] if interval == "1wk" else [63, 126, 252]),
+                                   [4, 13, 26, 52] if interval == "1wk" else [21, 63, 126, 252]),
+                "_rows": raw_rows,
+                "_hist": raw_rows,
                 "candles": [
                     {"t": rows[i]["t"], "c": round(rows[i]["c"], 2),
                      "m": r3(line[i]), "s": r3(sig[i]), "h": r3(hist[i]),
@@ -612,8 +842,41 @@ def main():
     except Exception as exc:  # noqa: BLE001 - spot is cosmetic
         print(f"  spot quote unavailable: {exc}")
 
+    rows_by_tf = {"weekly": weekly["_rows"], "daily": daily["_rows"]}
+    # A due date must land on a bar close to it: ~2 weeks for weekly, ~5 days for
+    # daily. Anything further out means the series has a hole and the horizon
+    # stays unscored rather than being resolved against the wrong price.
+    tol_by_tf = {"weekly": 14 * 86400, "daily": 5 * 86400}
+
+    ledger = _load_ledger()
+    if not any(e.get("backfilled") for e in ledger["entries"]):
+        filled = 0
+        for tf, s_, bpy, hz, step in (("weekly", weekly, 52, [4, 13, 26, 52], 8),
+                                      ("daily", daily, 252, [21, 63, 126, 252], 40)):
+            c = [r["c"] for r in s_["_hist"]]
+            ts = [r["t"] for r in s_["_hist"]]
+            ln, sg, ht = macd(c)
+            filled += backfill(ledger, c, ts, ln, sg, ht, sma(c, MA_LEN), rsi(c),
+                               hz, tf, bpy, step)
+        print(f"  ledger: backfilled {filled} historical entries")
+    made = [log_prediction(ledger, "weekly", weekly, spot, 52),
+            log_prediction(ledger, "daily", daily, spot, 252)]
+    resolved = score_ledger(ledger, rows_by_tf, tol_by_tf)
+    ledger["updated"] = int(time.time())
+    with open(LEDGER, "w", encoding="utf-8") as f:
+        json.dump(ledger, f, separators=(",", ":"))
+    print(f"  ledger: {sum(1 for m in made if m)} logged, {resolved} resolved, "
+          f"{len(ledger['entries'])} total")
+
+    for s_ in (weekly, daily):
+        s_.pop("_rows", None)
+        s_.pop("_hist", None)
+
     payload = {
         "generated": int(time.time()),
+        "scorecard": {"weekly": scorecard(ledger, "weekly"),
+                      "daily": scorecard(ledger, "daily")},
+        "recent": _recent(ledger),
         "params": {"fast": FAST, "slow": SLOW, "signal": SIGNAL,
                    "ma": MA_LEN, "rsi": RSI_LEN},
         "spot": spot,

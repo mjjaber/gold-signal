@@ -11,8 +11,9 @@ printed on the page next to it.
 GitHub Pages is static and Yahoo Finance sends no CORS headers, so the browser never
 calls a price API. Instead:
 
-1. `.github/workflows/update.yml` runs `scripts/build_data.py` on a schedule
-   (weekday evenings after the COMEX close, plus Saturday for the closed weekly candle).
+1. A GitHub Action runs `scripts/build_data.py` on a schedule (weekday evenings after the
+   COMEX close, plus Saturday for the closed weekly candle). The workflow file ships at
+   `scripts/github-workflow.yml` — see the header comment there to activate it.
 2. The script pulls weekly (30y) and daily (10y) candles for `GC=F`, falling back to
    `XAUUSD=X`, computes the indicators, replays the backtest, and writes `docs/data.json`.
 3. The Action commits that file. `docs/index.html` reads it same-origin — no keys,
@@ -179,6 +180,52 @@ mean 26-week forward returns came out **BUY +5.85%, HOLD +6.79%, SELL +5.06%** �
 1.73 points, with HOLD ahead of BUY. The signal barely separates outcomes at all. A point
 forecast on top of that distribution would be invention, so the width of the band is shown
 instead and left to speak for itself.
+
+## Save & verify: the prediction ledger
+
+Every rebuild appends the current call to `docs/predictions.json` — spot price, verdict,
+the projection bands, and a due date per horizon (4/13/26/52 weeks, 21/63/126/252 days).
+Each horizon scores itself once its date passes, and a scored horizon is never rewritten.
+The record is append-only and automatic, so it cannot be curated after the fact.
+
+The page also has a **Save this call** button that pins a prediction to the browser's
+localStorage, and **Check what is due** to score the saved ones against the live price.
+That is the on-demand version of the same thing, and it exists because it was asked for —
+but the auto-logged ledger is the one that counts. A save button you press by choice
+records the calls you felt good about; the ledger records all of them.
+
+The ledger was seeded with 196 causal replay entries so the scorecard had something to say
+on day one. Standing at each past bar, the bands were rebuilt from only the data available
+at that bar — matching rows drawn from `j < i`, and a match contributing a forward return
+for horizon h only when `j + h <= i`. Replay entries are tagged and dated so they are never
+confused with live calls.
+
+### What the scorecard says
+
+| Horizon | In band (target 80%) | Direction | Median error | Mean abs error |
+|---|---|---|---|---|
+| 4w | 75% | 50% | −0.8pp | 4.0pp |
+| 13w | 68% | 58% | −0.2pp | 7.0pp |
+| 26w | 62% | 53% | +0.0pp | 10.7pp |
+| 52w | 49% | 57% | +2.7pp | 16.8pp |
+
+Two honest failures worth reading:
+
+**The bands are too narrow.** A 10th–90th percentile range should contain ~80% of outcomes.
+It contains 64% overall and degrades badly with horizon — by 52 weeks only 49% of outcomes
+land inside a band advertised as covering 80%. The projection understates how wide gold's
+real distribution is, and understates it more the further out it reaches.
+
+**Direction is a coin flip.** 54% across 180 resolved BUY/SELL calls, and exactly 50% at the
+4-week horizon. This is the same conclusion the backtest reached, now measured a second and
+independent way.
+
+A note on why the first version of this scorecard was wrong: weekly entries were being
+resolved against a 10-year daily series, so any due date before 2016 silently matched the
+earliest available bar — scoring a 2005 prediction against a 2016 price and reporting a
++209% return and a 24-point mean error on a 4-week horizon. `_price_at` now refuses a
+timestamp before the series starts and refuses a bar more than a tolerance past due, and
+each timeframe scores against its own series.
 
 ## Local development
 
