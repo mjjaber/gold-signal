@@ -32,7 +32,7 @@
 
   .hero{
     background:linear-gradient(160deg,#1a2030,#161a22);border:1px solid var(--line);
-    border-radius:18px;padding:18px;margin-bottom:14px
+    border-radius:18px;padding:18px;margin-top:14px
   }
   .hero h2{font-size:11px;font-weight:600;color:var(--gold);text-transform:uppercase;
     letter-spacing:1.4px;margin-bottom:10px}
@@ -179,7 +179,6 @@ function render(){
     ' · ' + pct(d.maGap) + ' vs 50MA</span>';
 
   document.getElementById('app').innerHTML =
-    hero(s, bar) +
     '<section class="verdict" style="--vc:' + COLOR[s.verdict] + '">' +
       '<div class="call">' + s.verdict + '</div>' +
       '<div class="sub">' + KEY + ' · gold' +
@@ -191,6 +190,8 @@ function render(){
       '<div class="flags">' + regimeFlag + flags + '</div>' +
       '<div class="why">' + s.why + '</div>' +
     '</section>' +
+
+    hero(s, bar) +
 
     '<section class="card"><h2>Price vs 50-' + bar + ' average · last ' +
       s.candles.length + ' ' + bar + 's</h2>' + priceChart(s.candles) +
