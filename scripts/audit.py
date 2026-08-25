@@ -157,11 +157,20 @@ def audit_output():
             continue
         check(f"{leg} quote is plausible", 100 < v["price"] < 100000,
               f"${v['price']} via {v['source']}")
-        if v.get("prev"):
-            # A change figure is only meaningful against the same leg's own
-            # previous settled value; a wild move usually means a bad reference.
-            check(f"{leg} change is sane", abs(v["pct"]) < 15,
-                  f"{v['pct']:+.2f}% vs {v['prevLabel']}")
+        refs = v.get("refs") or {}
+        check(f"{leg} has a reference for both timeframes",
+              bool(refs.get("daily")) and bool(refs.get("weekly")))
+        for tf, ref in refs.items():
+            if ref.get("prev"):
+                # A change is only meaningful against the same leg's own most
+                # recent completed value; a wild move means a bad reference.
+                check(f"{leg} {tf} change is sane", abs(ref["pct"]) < 15,
+                      f"{ref['pct']:+.2f}% vs {ref['label']}")
+        d_ref, w_ref = refs.get("daily", {}), refs.get("weekly", {})
+        if d_ref.get("prev") and w_ref.get("prev"):
+            check(f"{leg} daily and weekly references differ",
+                  d_ref["prev"] != w_ref["prev"],
+                  f"daily {d_ref['prev']} vs weekly {w_ref['prev']}")
 
     bs = d.get("basis")
     if bs:

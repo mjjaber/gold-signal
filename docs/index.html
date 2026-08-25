@@ -440,15 +440,18 @@ function trackRecord(s, bar){
     '</section>';
 }
 
-function chgChip(price, prev, label){
-  // Each leg is compared with its own previous settled value, never with the
-  // other leg -- futures against the prior settle, bullion against the last fix.
-  if (!prev || !price) return '';
-  var d = price - prev, pc = d / prev * 100;
-  var cls = d >= 0 ? 'up' : 'down';
-  return '<div class="pchg ' + cls + '">' + (d >= 0 ? '\u25b2 ' : '\u25bc ') +
-    F(Math.abs(d)) + '  ' + (d >= 0 ? '+' : '\u2212') + F(Math.abs(pc)) + '%' +
-    '<div style="font-size:10px;font-weight:400;color:var(--dim)">vs ' + label + '</div></div>';
+function chgChip(price, leg){
+  // The reference follows the Weekly/Daily toggle, and is always that leg's own
+  // most recent COMPLETED value -- never the other leg, and never one period
+  // further back than the label claims.
+  var ref = leg && leg.refs && leg.refs[KEY];
+  if (!ref || !ref.prev || !price) return '';
+  var d = price - ref.prev, pc = d / ref.prev * 100;
+  return '<div class="pchg ' + (d >= 0 ? 'up' : 'down') + '">' +
+    (d >= 0 ? '\u25b2 ' : '\u25bc ') + F(Math.abs(d)) + '  ' +
+    (d >= 0 ? '+' : '\u2212') + F(Math.abs(pc)) + '%' +
+    '<div style="font-size:10px;font-weight:400;color:var(--dim)">vs ' +
+      esc(ref.label) + '</div></div>';
 }
 
 function priceRows(s, bar, chg, cp){
@@ -467,7 +470,7 @@ function priceRows(s, bar, chg, cp){
           (fq.symbol ? ' \u00b7 ' + esc(fq.symbol) : '') +
           ' \u00b7 last build \u00b7 ' + agoText(DATA.generated) + '</div></div>' +
       '<div class="right"><div class="val">$' + F(DATA.spot) + '</div>' +
-        chgChip(DATA.spot, fq.prev, fq.prevLabel || 'prior settle') + '</div>' +
+        chgChip(DATA.spot, fq) + '</div>' +
     '</div>';
 
   var px = LIVE ? LIVE.price : (b && b.price);
@@ -482,7 +485,7 @@ function priceRows(s, bar, chg, cp){
         '<div><div class="lbl" style="color:var(--buy)">Bullion</div>' +
           '<div class="sub2">' + srcTxt + '</div></div>' +
         '<div class="right"><div class="val" style="color:var(--buy)">$' + F(px) + '</div>' +
-          chgChip(px, bq.prev, bq.prevLabel || 'LBMA fix') + '</div>' +
+          chgChip(px, bq) + '</div>' +
       '</div>';
   }
 

@@ -325,6 +325,8 @@ def basis_signal(fixes, fut_rows):
         "spot": round(rows[-1]["spot"], 2),
         "prevFix": round(rows[-2]["spot"], 2),
         "lastFix": round(rows[-1]["spot"], 2),
+        # roughly one trading week back, for the weekly view's reference
+        "weekAgoFix": round(rows[-6]["spot"], 2) if len(rows) > 6 else None,
         "future": round(rows[-1]["fut"], 2),
         "dayBasis": round(rows[-1]["basis"], 2),
         "avg": round(cur, 3),
@@ -1334,22 +1336,21 @@ def main():
         print(f"  bullion {bullion['price']} via {bullion['source']} | "
               f"future {spot} = {prem:+.2f}% premium")
 
-    # Reference prices for the change figures: each leg is compared with its own
-    # previous settled value, never with the other leg.
-    prev_fut = daily["prev"] if daily.get("prev") else None
-    prev_fix = None
-    if basis and basis.get("history") and len(basis["history"]) > 1:
-        prev_fix = basis.get("prevFix")
-
+    # Reference prices for the change figures. Each leg is compared with its own
+    # most recent COMPLETED value -- the last settle, not the one before it --
+    # and a separate reference is published per timeframe so the figure changes
+    # when the page's Weekly/Daily toggle does.
     quotes = {
         "futures": {
             "price": spot,
             "symbol": fq["symbol"] if fq else None,
             "source": fq["source"] if fq else "last completed settle",
             "exchange": fq["exchange"] if fq else weekly.get("source"),
-            "prev": prev_fut,
-            "prevLabel": "prior settle",
             "live": bool(fq),
+            "refs": {
+                "daily": {"prev": daily.get("last"), "label": "last settle"},
+                "weekly": {"prev": weekly.get("last"), "label": "last weekly close"},
+            },
         },
         "bullion": None,
     }
@@ -1357,14 +1358,21 @@ def main():
         quotes["bullion"] = {
             "price": bullion["price"],
             "source": bullion["source"],
-            "prev": prev_fix,
-            "prevLabel": "LBMA fix",
             "live": True,
+            "refs": {
+                "daily": {"prev": basis.get("lastFix") if basis else None,
+                          "label": "last LBMA fix"},
+                "weekly": {"prev": basis.get("weekAgoFix") if basis else None,
+                           "label": "fix a week ago"},
+            },
         }
-    for k, q in quotes.items():
-        if q and q.get("prev"):
-            q["chg"] = round(q["price"] - q["prev"], 2)
-            q["pct"] = round((q["price"] - q["prev"]) / q["prev"] * 100, 2)
+    for q in quotes.values():
+        if not q:
+            continue
+        for ref in q["refs"].values():
+            if ref.get("prev"):
+                ref["chg"] = round(q["price"] - ref["prev"], 2)
+                ref["pct"] = round((q["price"] - ref["prev"]) / ref["prev"] * 100, 2)
 
     payload = {
         "generated": int(time.time()),

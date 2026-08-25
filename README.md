@@ -369,10 +369,26 @@ than inventing one.
 
 ### Change figures
 
-Each row shows its own move against its own reference — **futures against the prior
-settle, bullion against the last LBMA fix**. They are never compared against each other,
-which would just restate the carry. `audit.py` rejects a build where either change exceeds
-15%, since that almost always means a bad reference price rather than a real move.
+Each row shows its own move against its own reference, and **the reference follows the
+Weekly/Daily toggle**:
+
+| | Daily view | Weekly view |
+|---|---|---|
+| Futures | vs last settle | vs last weekly close |
+| Bullion | vs last LBMA fix | vs the fix a week ago |
+
+The two legs are never differenced against each other, which would only restate the carry
+shown below them.
+
+The first version of this got it wrong twice over: both legs referenced one period further
+back than their label claimed (`daily["prev"]` rather than `daily["last"]`, and `prevFix`
+rather than `lastFix`), and neither changed when the timeframe did. The off-by-one was easy
+to miss because the prior daily settle happened to equal the last weekly close, so the
+number looked reasonable.
+
+`audit.py` now checks that both timeframes have a reference, that the two references
+actually differ, and that no change exceeds 15% — which in practice means a bad reference
+rather than a real move.
 
 ## Futures vs bullion
 
