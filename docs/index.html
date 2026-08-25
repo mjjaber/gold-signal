@@ -52,6 +52,12 @@
     margin-top:4px;font-variant-numeric:tabular-nums}
   .caveat{margin-top:14px;padding-top:13px;border-top:1px solid var(--line);
     font-size:12px;color:var(--dim);line-height:1.6}
+  .stale{
+    background:#3a2a12;border:1px solid #6b4d1c;border-radius:12px;padding:12px 14px;
+    margin-bottom:14px;font-size:13px;line-height:1.5;color:#f0d9a8
+  }
+  .stale b{color:var(--gold)}
+  .fresh{font-size:11px;color:var(--dim);text-align:center;margin-bottom:12px}
   .verdict{
     border-radius:18px;padding:26px 20px;text-align:center;
     background:var(--card);border:1px solid var(--line);position:relative;overflow:hidden
@@ -205,6 +211,7 @@ function render(){
     ' · ' + pct(d.maGap) + ' vs 50MA</span>';
 
   document.getElementById('app').innerHTML =
+    freshness() +
     '<section class="verdict" style="--vc:' + COLOR[s.verdict] + '">' +
       '<div class="call">' + s.verdict + '</div>' +
       '<div class="sub">' + KEY + ' &middot; ' +
@@ -313,6 +320,21 @@ function trackRecord(s, bar){
     ' of them profitable, averaging ' + pct(pos.avg) + ' over ' + pos.avgBars + ' ' + bar + 's ' +
     '(best ' + pct(pos.best) + ', worst ' + pct(pos.worst) + ').' + '<br><br>Signals are filled one bar after they fire, because the close that produces a signal is not known until the bar has closed. Filling on the signal bar itself flatters the weekly position rule by 1.4 points of CAGR. No commission or spread is modelled.</div>' +
     '</section>';
+}
+
+function freshness(){
+  // The data only moves when the builder runs. If that has not happened for a
+  // while the page looks alive but is not, so say so rather than let a stale
+  // price pass for a current one.
+  var hours = (Date.now() / 1000 - DATA.generated) / 3600;
+  if (hours < 26){
+    return '<div class="fresh">Data rebuilt ' +
+      (hours < 1 ? Math.round(hours * 60) + ' min' : Math.round(hours) + ' h') + ' ago</div>';
+  }
+  var days = Math.floor(hours / 24);
+  return '<div class="stale"><b>This data is ' + days + ' day' + (days === 1 ? '' : 's') +
+    ' old.</b> Prices and every number below are frozen at the last rebuild — nothing here ' +
+    'reflects today. The scheduled updater has not run.</div>';
 }
 
 function provisionalFlag(s){
