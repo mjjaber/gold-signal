@@ -448,6 +448,85 @@ def proximity(closes, ma, horizon, min_n=20):
     }
 
 
+# ---------------------------------------------------------------- outlook
+
+def _pctile(sorted_xs, q):
+    if not sorted_xs:
+        return None
+    k = (len(sorted_xs) - 1) * q
+    lo, hi = int(k), min(int(k) + 1, len(sorted_xs) - 1)
+    return sorted_xs[lo] + (sorted_xs[hi] - sorted_xs[lo]) * (k - lo)
+
+
+def outlook(closes, line, sig, hist, ma, rs, horizons, min_n=40):
+    """What actually happened next, from setups that looked like today's.
+
+    This is a base rate with its spread shown, not a forecast. Nothing here
+    predicts -- it reports the distribution of outcomes from matching history and
+    lets the width of that distribution speak for itself.
+    """
+    n = len(closes)
+    states = _series_states(closes, line, sig, hist, ma, rs)
+    peaks = _running_max(closes)
+    dd = [(peaks[i] - closes[i]) / peaks[i] * 100 for i in range(n)]
+    buckets = [_bucket_of(x) for x in dd]
+
+    i = n - 1
+    here_state, here_bucket = states[i], buckets[i]
+
+    # Tighten the match if history allows it, loosen it when it doesn't, and say
+    # which one was actually used.
+    tiers = [
+        ("state and drawdown zone",
+         [j for j in range(n - 1) if states[j] == here_state and buckets[j] == here_bucket]),
+        ("signal state alone",
+         [j for j in range(n - 1) if states[j] == here_state]),
+        ("the whole record", list(range(n - 1))),
+    ]
+    basis, rows = tiers[-1]
+    for label, cand in tiers:
+        if len(cand) >= min_n:
+            basis, rows = label, cand
+            break
+
+    out = {"basis": basis, "matches": len(rows), "state": here_state,
+           "bucket": here_bucket, "horizons": horizons, "bands": {}, "skill": {}}
+
+    for h in horizons:
+        xs = sorted((closes[j + h] - closes[j]) / closes[j] * 100
+                    for j in rows if j + h < n)
+        if len(xs) < 20:
+            continue
+        base = sorted((closes[j + h] - closes[j]) / closes[j] * 100
+                      for j in range(n - h))
+        out["bands"][str(h)] = {
+            "n": len(xs),
+            "p10": round(_pctile(xs, .10), 2),
+            "p25": round(_pctile(xs, .25), 2),
+            "p50": round(_pctile(xs, .50), 2),
+            "p75": round(_pctile(xs, .75), 2),
+            "p90": round(_pctile(xs, .90), 2),
+            "win": round(sum(1 for x in xs if x > 0) / len(xs) * 100),
+            "baseMedian": round(_pctile(base, .50), 2),
+            "baseWin": round(sum(1 for x in base if x > 0) / len(base) * 100),
+        }
+
+    # Measured skill: does the signal state separate forward returns at all?
+    h = horizons[len(horizons) // 2]
+    by = {}
+    for st in ("BUY", "HOLD", "SELL"):
+        xs = [(closes[j + h] - closes[j]) / closes[j] * 100
+              for j in range(n - h) if states[j] == st]
+        if len(xs) >= 20:
+            by[st] = {"n": len(xs), "mean": round(sum(xs) / len(xs), 2),
+                      "win": round(sum(1 for x in xs if x > 0) / len(xs) * 100)}
+    if by:
+        means = [v["mean"] for v in by.values()]
+        out["skill"] = {"horizon": h, "byState": by,
+                        "spread": round(max(means) - min(means), 2)}
+    return out
+
+
 # ---------------------------------------------------------------- assembly
 
 def series(interval, points):
@@ -506,6 +585,8 @@ def series(interval, points):
                 "test": test,
                 "grid": sensitivity(closes, ma, test["hold"]["cagr"], bpy),
                 "proximity": proximity(closes, ma, 52 if interval == "1wk" else 252),
+                "outlook": outlook(closes, line, sig, hist, ma, rs,
+                                   [13, 26, 52] if interval == "1wk" else [63, 126, 252]),
                 "candles": [
                     {"t": rows[i]["t"], "c": round(rows[i]["c"], 2),
                      "m": r3(line[i]), "s": r3(sig[i]), "h": r3(hist[i]),
@@ -558,6 +639,12 @@ def main():
               f"{g['beatHold']} beat hold")
         pr = s["proximity"]
         cur = next(b for b in pr["table"] if b["label"] == pr["now"]["bucket"])
+        o = s["outlook"]
+        far = o["bands"].get(str(o["horizons"][-1]))
+        if far:
+            print(f"    outlook ({o['basis']}, n={o['matches']}): "
+                  f"p10 {far['p10']}% / median {far['p50']}% / p90 {far['p90']}% "
+                  f"| state spread {o['skill'].get('spread')}pp")
         stable = sum(1 for b in pr["table"] if b["stable"])
         rated = sum(1 for b in pr["table"] if b["stable"] is not None)
         f = cur["fwd"]["all"]

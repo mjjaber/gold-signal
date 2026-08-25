@@ -30,6 +30,27 @@
   }
   .tf button[aria-pressed="true"]{background:var(--card2);color:var(--txt)}
 
+  .hero{
+    background:linear-gradient(160deg,#1a2030,#161a22);border:1px solid var(--line);
+    border-radius:18px;padding:18px;margin-bottom:14px
+  }
+  .hero h2{font-size:11px;font-weight:600;color:var(--gold);text-transform:uppercase;
+    letter-spacing:1.4px;margin-bottom:10px}
+  .hero .read{font-size:15px;line-height:1.55;color:var(--txt)}
+  .hero .read b{color:var(--gold);font-weight:700}
+  .cone{margin-top:16px}
+  .cone .row{margin-bottom:13px}
+  .cone .lab{display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim);margin-bottom:5px}
+  .cone .lab b{color:var(--txt);font-variant-numeric:tabular-nums;font-weight:700}
+  .bar{position:relative;height:22px;border-radius:6px;background:var(--card2);overflow:hidden}
+  .bar .span{position:absolute;top:0;bottom:0;background:linear-gradient(90deg,
+    rgba(239,68,68,.55),rgba(234,179,8,.45),rgba(34,197,94,.55))}
+  .bar .mid{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--txt)}
+  .bar .now{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--gold)}
+  .ends{display:flex;justify-content:space-between;font-size:10.5px;color:var(--dim);
+    margin-top:4px;font-variant-numeric:tabular-nums}
+  .caveat{margin-top:14px;padding-top:13px;border-top:1px solid var(--line);
+    font-size:12px;color:var(--dim);line-height:1.6}
   .verdict{
     border-radius:18px;padding:26px 20px;text-align:center;
     background:var(--card);border:1px solid var(--line);position:relative;overflow:hidden
@@ -158,6 +179,7 @@ function render(){
     ' · ' + pct(d.maGap) + ' vs 50MA</span>';
 
   document.getElementById('app').innerHTML =
+    hero(s, bar) +
     '<section class="verdict" style="--vc:' + COLOR[s.verdict] + '">' +
       '<div class="call">' + s.verdict + '</div>' +
       '<div class="sub">' + KEY + ' · gold' +
@@ -257,6 +279,67 @@ function trackRecord(s, bar){
     ' of them profitable, averaging ' + pct(pos.avg) + ' over ' + pos.avgBars + ' ' + bar + 's ' +
     '(best ' + pct(pos.best) + ', worst ' + pct(pos.worst) + ').</div>' +
     '</section>';
+}
+
+function hero(s, bar){
+  var o = s.outlook, d = s.detail;
+  if (!o || !o.bands) return '';
+  var unit = bar === 'week' ? 'w' : 'd';
+  var spot = DATA.spot;
+
+  // Plain-language momentum read, assembled from what was actually measured.
+  var dirn = {BUY: 'building to the upside', SELL: 'building to the downside',
+              HOLD: 'stalling'}[s.verdict];
+  var read = 'Momentum is <b>' + dirn + '</b> on the ' + KEY + ' chart. ' +
+    'MACD sits ' + (d.hist >= 0 ? 'above' : 'below') + ' its signal line and has for ' +
+    d.crossAge + ' ' + bar + (d.crossAge === 1 ? '' : 's') + ', price is ' +
+    pct(d.maGap) + ' ' + (d.maGap >= 0 ? 'above' : 'below') + ' its 50-' + bar +
+    ' average, and RSI is ' + F(d.rsi, 0) + '. ' +
+    'Gold sits in the <b>' + o.bucket + '</b> zone, ' + s.proximity.now.drawdown +
+    '% off its period high.';
+
+  var rows = o.horizons.map(function(h){
+    var b = o.bands[String(h)];
+    if (!b) return '';
+    var lo = spot * (1 + b.p10 / 100), mid = spot * (1 + b.p50 / 100), hi = spot * (1 + b.p90 / 100);
+    // Scale the bar so the current price always has a place on it.
+    var min = Math.min(lo, spot), max = Math.max(hi, spot), w = (max - min) || 1;
+    var pos = function(v){ return ((v - min) / w * 100).toFixed(1) + '%'; };
+    return '<div class="row">' +
+      '<div class="lab"><span>next ' + h + unit + '</span>' +
+        '<span>median <b>$' + F(mid, 0) + '</b> · ' + pct(b.p50) + '</span></div>' +
+      '<div class="bar">' +
+        '<div class="span" style="left:' + pos(lo) + ';right:' + (100 - parseFloat(pos(hi))).toFixed(1) + '%"></div>' +
+        '<div class="now" style="left:' + pos(spot) + '"></div>' +
+        '<div class="mid" style="left:' + pos(mid) + '"></div>' +
+      '</div>' +
+      '<div class="ends"><span>$' + F(lo, 0) + '</span>' +
+        '<span>' + b.win + '% of cases finished higher · n=' + b.n + '</span>' +
+        '<span>$' + F(hi, 0) + '</span></div>' +
+    '</div>';
+  }).join('');
+
+  var sk = o.skill && o.skill.byState ? o.skill : null;
+  var skillLine = '';
+  if (sk){
+    var parts = [];
+    ['BUY','HOLD','SELL'].forEach(function(k){
+      if (sk.byState[k]) parts.push(k + ' ' + pct(sk.byState[k].mean));
+    });
+    skillLine = ' Measured over the full record, the signal barely separates outcomes at all — ' +
+      'mean ' + sk.horizon + unit + ' returns by state came out ' + parts.join(', ') +
+      ', a spread of just <b>' + sk.spread + ' points</b>.';
+  }
+
+  return '<section class="hero">' +
+    '<h2>Outlook</h2><div class="read">' + read + '</div>' +
+    '<div class="cone">' + rows + '</div>' +
+    '<div class="caveat"><b>This is a base rate, not a forecast.</b> The bands show where ' +
+    'gold actually landed after the ' + o.matches + ' past setups matching today on <b>' +
+    o.basis + '</b> — 10th to 90th percentile, with the marker at the median and the gold ' +
+    'line at today’s price.' + skillLine +
+    ' Nothing on this page predicts the price; the width of those bars is the honest answer.' +
+    '</div></section>';
 }
 
 function proximity(s, bar){

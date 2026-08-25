@@ -164,6 +164,22 @@ bullish divergences underperformed baseline at short horizons. With only 13–30
 configuration, the honest reading is that there is no detectable effect either way — not
 enough signal to justify putting an arrow on the chart.
 
+## The outlook card
+
+The page leads with a summary: a plain-language read of current momentum, then the
+distribution of what actually happened next from matching historical setups — 10th to 90th
+percentile, converted to prices, with the median marked and today's price on the same bar.
+
+It is deliberately **not** a price target. The match is made on signal state plus drawdown
+zone where history supports it, loosened to signal state alone or the whole record when it
+does not, and the card names which basis it used and how many samples backed it.
+
+The card also prints the measured skill of the signal, which is the number that matters:
+mean 26-week forward returns came out **BUY +5.85%, HOLD +6.79%, SELL +5.06%** — a spread of
+1.73 points, with HOLD ahead of BUY. The signal barely separates outcomes at all. A point
+forecast on top of that distribution would be invention, so the width of the band is shown
+instead and left to speak for itself.
+
 ## Local development
 
 ```bash
