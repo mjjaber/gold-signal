@@ -340,6 +340,40 @@ stop working if market structure changes.
 Every reading is logged to the same prediction ledger as the MACD calls and scored the same
 way, so it will be held to its own record rather than to this README.
 
+## Price sources and their backups
+
+Every quote falls through a chain, and each fallback was tested by simulating an outage
+of the one above it (`scripts/` has no test harness for this; it was verified by blocking
+each host at the urllib layer).
+
+**Futures** — Yahoo is the only source with the deep history the signals need, so
+redundancy is layered rather than replaced:
+
+| Tier | What |
+|---|---|
+| 1 | `GC=F` via `query1.finance.yahoo.com` |
+| 2 | same symbol via `query2` — a separate front end for the same data |
+| 3 | `MGC=F`, the micro contract on the same underlying (prices within ~0.02% of GC) |
+
+**Bullion** — three genuinely independent providers:
+
+| Tier | What |
+|---|---|
+| 1 | `api.gold-api.com` |
+| 2 | Swissquote's public dealable bid/ask |
+| 3 | PAX Gold via CoinGecko — a token redeemable for allocated bullion; labelled "(backup)" on the page because it carries its own small premium |
+
+In the browser only tiers 1 and 3 are reachable, since Swissquote sends no CORS headers.
+If all sources for a leg fail, the page shows the last published value with its age rather
+than inventing one.
+
+### Change figures
+
+Each row shows its own move against its own reference — **futures against the prior
+settle, bullion against the last LBMA fix**. They are never compared against each other,
+which would just restate the carry. `audit.py` rejects a build where either change exceeds
+15%, since that almost always means a bad reference price rather than a real move.
+
 ## Futures vs bullion
 
 The verdict card shows two prices stacked: the COMEX front-month future and spot bullion

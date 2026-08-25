@@ -149,6 +149,20 @@ def audit_output():
     else:
         print("  WARN  no bullion quote in this build")
 
+    q = d.get("quotes") or {}
+    for leg in ("futures", "bullion"):
+        v = q.get(leg)
+        if not v:
+            print(f"  WARN  no {leg} quote in this build")
+            continue
+        check(f"{leg} quote is plausible", 100 < v["price"] < 100000,
+              f"${v['price']} via {v['source']}")
+        if v.get("prev"):
+            # A change figure is only meaningful against the same leg's own
+            # previous settled value; a wild move usually means a bad reference.
+            check(f"{leg} change is sane", abs(v["pct"]) < 15,
+                  f"{v['pct']:+.2f}% vs {v['prevLabel']}")
+
     bs = d.get("basis")
     if bs:
         check("basis percentile is in range", 0 <= bs["percentile"] <= 100,

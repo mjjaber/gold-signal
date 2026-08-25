@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0d0f14">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.gold-api.com; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.gold-api.com https://api.coingecko.com; img-src 'self' data:; base-uri 'none'; form-action 'none'">
 <title>Gold Doctor Signal</title>
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%AA%99%3C/text%3E%3C/svg%3E">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%AA%99%3C/text%3E%3C/svg%3E">
@@ -83,6 +83,8 @@
   .prow .lbl{font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
   .prow .sub2{font-size:10.5px;color:var(--dim);margin-top:2px}
   .prow .val{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+  .prow .right{text-align:right}
+  .pchg{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px}
   .spread{font-size:11px;color:var(--dim);text-align:center;margin-top:8px}
   .zbar{position:relative;height:34px;border-radius:8px;overflow:hidden;margin:12px 0 6px;
     background:linear-gradient(90deg,rgba(239,68,68,.30),rgba(234,179,8,.22) 45%,
@@ -227,16 +229,30 @@ function toast(msg){
 // whatever the last build published.
 var LIVE = null;
 
-function pullLiveBullion(){
-  return fetch('https://api.gold-api.com/price/XAU', {cache: 'no-store'})
+// Both of these send CORS headers and are allowed by the CSP. PAXG is a token
+// redeemable for allocated bullion, so it stands in acceptably when the primary
+// feed is down -- flagged as a fallback because it carries its own premium.
+var LIVE_FEEDS = [
+  {name: 'gold-api', url: 'https://api.gold-api.com/price/XAU',
+   pick: function(d){ return Number(d && d.price); }},
+  {name: 'PAXG', url: 'https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd',
+   pick: function(d){ return Number(d && d['pax-gold'] && d['pax-gold'].usd); }, fallback: true}
+];
+
+function pullLiveBullion(k){
+  k = k || 0;
+  if (k >= LIVE_FEEDS.length) return Promise.resolve(null);
+  var f = LIVE_FEEDS[k];
+  return fetch(f.url, {cache: 'no-store'})
     .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
     .then(function(d){
-      var px = Number(d && d.price);
+      var px = f.pick(d);
       if (!(px > 100 && px < 100000)) throw 'implausible price';
-      LIVE = {price: px, at: Math.floor(Date.now() / 1000), quotedAt: d.updatedAt || null};
+      LIVE = {price: px, at: Math.floor(Date.now() / 1000), source: f.name,
+              fallback: !!f.fallback};
       return LIVE;
     })
-    .catch(function(){ return null; });
+    .catch(function(){ return pullLiveBullion(k + 1); });
 }
 
 function pull(announce){
@@ -424,31 +440,49 @@ function trackRecord(s, bar){
     '</section>';
 }
 
+function chgChip(price, prev, label){
+  // Each leg is compared with its own previous settled value, never with the
+  // other leg -- futures against the prior settle, bullion against the last fix.
+  if (!prev || !price) return '';
+  var d = price - prev, pc = d / prev * 100;
+  var cls = d >= 0 ? 'up' : 'down';
+  return '<div class="pchg ' + cls + '">' + (d >= 0 ? '\u25b2 ' : '\u25bc ') +
+    F(Math.abs(d)) + '  ' + (d >= 0 ? '+' : '\u2212') + F(Math.abs(pc)) + '%' +
+    '<div style="font-size:10px;font-weight:400;color:var(--dim)">vs ' + label + '</div></div>';
+}
+
 function priceRows(s, bar, chg, cp){
   var b = DATA.bullion;
+  var q = DATA.quotes || {};
   var chgHtml = '<div class="chg ' + (chg >= 0 ? 'up' : 'down') + '">' +
     (chg >= 0 ? '\u25b2 ' : '\u25bc ') + F(Math.abs(chg)) +
     ' (' + (cp >= 0 ? '+' : '\u2212') + F(Math.abs(cp)) + '%) in the ' + bar +
     ' to ' + fmtDate(s.asOf) + '</div>';
 
+  var fq = q.futures || {};
   var rows =
     '<div class="prow">' +
       '<div><div class="lbl">Futures</div>' +
-        '<div class="sub2">' + (s.source || 'COMEX') + ' \u00b7 last build \u00b7 ' +
-          agoText(DATA.generated) + '</div></div>' +
-      '<div class="val">$' + F(DATA.spot) + '</div>' +
+        '<div class="sub2">' + esc(fq.exchange || s.source || 'COMEX') +
+          (fq.symbol ? ' \u00b7 ' + esc(fq.symbol) : '') +
+          ' \u00b7 last build \u00b7 ' + agoText(DATA.generated) + '</div></div>' +
+      '<div class="right"><div class="val">$' + F(DATA.spot) + '</div>' +
+        chgChip(DATA.spot, fq.prev, fq.prevLabel || 'prior settle') + '</div>' +
     '</div>';
 
   var px = LIVE ? LIVE.price : (b && b.price);
   var srcTxt = LIVE
-    ? 'spot XAU/USD \u00b7 live \u00b7 ' + agoText(LIVE.at)
+    ? 'spot XAU/USD \u00b7 live \u00b7 ' + esc(LIVE.source) +
+      (LIVE.fallback ? ' (backup)' : '') + ' \u00b7 ' + agoText(LIVE.at)
     : (b ? 'spot XAU/USD \u00b7 ' + esc(b.source) : '');
+  var bq = q.bullion || {};
   if (px){
     rows +=
       '<div class="prow bull">' +
         '<div><div class="lbl" style="color:var(--buy)">Bullion</div>' +
           '<div class="sub2">' + srcTxt + '</div></div>' +
-        '<div class="val" style="color:var(--buy)">$' + F(px) + '</div>' +
+        '<div class="right"><div class="val" style="color:var(--buy)">$' + F(px) + '</div>' +
+          chgChip(px, bq.prev, bq.prevLabel || 'LBMA fix') + '</div>' +
       '</div>';
   }
 

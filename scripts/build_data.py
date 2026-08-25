@@ -55,8 +55,14 @@ EXEC_LAG = 1
 # deep weekly history at all, so each source states what it can actually serve.
 SOURCES = [
     ("GC=F", {"1wk": "30y", "1d": "10y"}),
+    ("MGC=F", {"1wk": "10y", "1d": "10y"}),
     ("XAUUSD=X", {"1wk": "10y", "1d": "10y"}),
 ]
+YAHOO_HOSTS = ["query1", "query2"]
+# Live futures quote, in order. MGC is the micro contract on the same underlying
+# and prices within a couple of basis points of GC, so it is a true stand-in
+# rather than a proxy.
+FUTURE_QUOTES = [("GC=F", "COMEX front month"), ("MGC=F", "COMEX micro gold")]
 # Spot bullion (XAU/USD), which is a different price from the COMEX future the
 # signal is built on -- the future carries a financing premium and currently
 # trades ~1.2% above spot. Two keyless sources, cross-checked: gold-api is a
@@ -66,6 +72,10 @@ SPOT_SOURCES = [
     ("gold-api", "https://api.gold-api.com/price/XAU"),
     ("Swissquote", "https://forex-data-feed.swissquote.com/public-quotes/"
                    "bboquotes/instrument/XAU/USD"),
+    # PAX Gold is a token redeemable for allocated bullion, so it tracks spot
+    # closely. Last resort only -- it can carry its own small premium.
+    ("PAXG", "https://api.coingecko.com/api/v3/simple/price"
+             "?ids=pax-gold&vs_currencies=usd"),
 ]
 # The LBMA PM fix is the bullion benchmark, published daily back to 1968. Its
 # gap to the COMEX settle -- averaged over 20 sessions -- is the one input in
@@ -81,22 +91,27 @@ LEDGER = os.path.join(os.path.dirname(__file__), "..", "docs", "predictions.json
 # ---------------------------------------------------------------- fetching
 
 def fetch(symbol, interval, rng):
-    url = (
-        "https://query1.finance.yahoo.com/v8/finance/chart/"
-        + urllib.parse.quote(symbol)
-        + f"?range={rng}&interval={interval}"
-    )
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    """Chart data, trying both Yahoo hosts before giving up.
+
+    query1 and query2 are separate front ends for the same data, so a transient
+    failure or rate limit on one is often served fine by the other.
+    """
     ctx = ssl.create_default_context()
+    last = None
     for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
-                return json.load(r)["chart"]["result"][0]
-        except Exception as exc:  # noqa: BLE001 - retry any transport error
-            if attempt == 2:
-                raise
-            print(f"  {symbol} {interval} attempt {attempt + 1} failed: {exc}")
+        for host in YAHOO_HOSTS:
+            url = (f"https://{host}.finance.yahoo.com/v8/finance/chart/"
+                   + urllib.parse.quote(symbol) + f"?range={rng}&interval={interval}")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
+                    return json.load(r)["chart"]["result"][0]
+            except Exception as exc:  # noqa: BLE001 - try the next host
+                last = exc
+        if attempt < 2:
+            print(f"  {symbol} {interval} attempt {attempt + 1} failed on both hosts: {last}")
             time.sleep(5)
+    raise last
 
 
 def candles(result):
@@ -110,6 +125,26 @@ def candles(result):
             continue
         out.append({"t": t, "c": c})
     return out
+
+
+# ---------------------------------------------------------------- futures quote
+
+def futures_quote():
+    """Live futures print, falling through the contract list."""
+    errs = []
+    for sym, label in FUTURE_QUOTES:
+        try:
+            meta = fetch(sym, "1d", "5d")["meta"]
+            px = meta.get("regularMarketPrice")
+            if not (px and 100 < px < 100000):
+                raise ValueError(f"implausible price {px}")
+            return {"price": round(px, 2), "symbol": sym, "source": label,
+                    "exchange": meta.get("fullExchangeName", "COMEX"),
+                    "quotedAt": meta.get("regularMarketTime")}
+        except Exception as exc:  # noqa: BLE001 - next contract
+            errs.append(f"{sym}: {exc}")
+    print(f"  futures quote unavailable ({'; '.join(errs)})")
+    return None
 
 
 # ---------------------------------------------------------------- spot bullion
@@ -141,7 +176,12 @@ def _parse_swissquote(d):
     return best[1], None
 
 
-PARSERS = {"gold-api": _parse_gold_api, "Swissquote": _parse_swissquote}
+def _parse_paxg(d):
+    return float(d["pax-gold"]["usd"]), None
+
+
+PARSERS = {"gold-api": _parse_gold_api, "Swissquote": _parse_swissquote,
+           "PAXG": _parse_paxg}
 
 
 def spot_bullion():
@@ -283,6 +323,8 @@ def basis_signal(fixes, fut_rows):
     return {
         "asOf": rows[-1]["d"],
         "spot": round(rows[-1]["spot"], 2),
+        "prevFix": round(rows[-2]["spot"], 2),
+        "lastFix": round(rows[-1]["spot"], 2),
         "future": round(rows[-1]["fut"], 2),
         "dayBasis": round(rows[-1]["basis"], 2),
         "avg": round(cur, 3),
@@ -1218,11 +1260,8 @@ def main():
     print("building daily...")
     daily = series("1d", 260)
 
-    spot = weekly["last"]
-    try:
-        spot = round(fetch(SOURCES[0][0], "1d", "5d")["meta"]["regularMarketPrice"], 2)
-    except Exception as exc:  # noqa: BLE001 - spot is cosmetic
-        print(f"  spot quote unavailable: {exc}")
+    fq = futures_quote()
+    spot = fq["price"] if fq else weekly["last"]
 
     rows_by_tf = {"weekly": weekly["_rows"], "daily": daily["_rows"]}
     _fixes_cache = {}
@@ -1295,10 +1334,43 @@ def main():
         print(f"  bullion {bullion['price']} via {bullion['source']} | "
               f"future {spot} = {prem:+.2f}% premium")
 
+    # Reference prices for the change figures: each leg is compared with its own
+    # previous settled value, never with the other leg.
+    prev_fut = daily["prev"] if daily.get("prev") else None
+    prev_fix = None
+    if basis and basis.get("history") and len(basis["history"]) > 1:
+        prev_fix = basis.get("prevFix")
+
+    quotes = {
+        "futures": {
+            "price": spot,
+            "symbol": fq["symbol"] if fq else None,
+            "source": fq["source"] if fq else "last completed settle",
+            "exchange": fq["exchange"] if fq else weekly.get("source"),
+            "prev": prev_fut,
+            "prevLabel": "prior settle",
+            "live": bool(fq),
+        },
+        "bullion": None,
+    }
+    if bullion:
+        quotes["bullion"] = {
+            "price": bullion["price"],
+            "source": bullion["source"],
+            "prev": prev_fix,
+            "prevLabel": "LBMA fix",
+            "live": True,
+        }
+    for k, q in quotes.items():
+        if q and q.get("prev"):
+            q["chg"] = round(q["price"] - q["prev"], 2)
+            q["pct"] = round((q["price"] - q["prev"]) / q["prev"] * 100, 2)
+
     payload = {
         "generated": int(time.time()),
         "bullion": bullion,
         "basis": basis,
+        "quotes": quotes,
         "scorecard": {"weekly": scorecard(ledger, "weekly"),
                       "daily": scorecard(ledger, "daily")},
         "recent": _recent(ledger),
