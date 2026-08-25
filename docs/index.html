@@ -11,7 +11,7 @@
   :root{
     --bg:#0d0f14; --card:#161a22; --card2:#1e232d; --line:#2a3140;
     --txt:#e8ecf3; --dim:#8a94a6;
-    --buy:#22c55e; --sell:#ef4444; --hold:#eab308; --gold:#f5c451;
+    --buy:#22c55e; --sell:#ef4444; --hold:#eab308; --gold:#f5c451; --blue:#60a5fa;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{
@@ -23,7 +23,7 @@
   header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}
   h1{font-size:16px;font-weight:600;letter-spacing:.3px}
   h1 span{color:var(--gold)}
-  .tf{display:flex;gap:4px;background:var(--card);border-radius:10px;padding:3px}
+  .tf{display:flex;gap:4px;background:var(--card);border-radius:10px;padding:3px;flex:none}
   .tf button{
     background:none;border:0;color:var(--dim);font:600 13px/1 inherit;
     padding:9px 13px;border-radius:8px;cursor:pointer
@@ -41,6 +41,11 @@
   .price{font-size:30px;font-weight:700;margin-top:16px;font-variant-numeric:tabular-nums}
   .chg{font-size:14px;font-weight:600;margin-top:2px;font-variant-numeric:tabular-nums}
   .up{color:var(--buy)} .down{color:var(--sell)}
+  .flags{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:14px}
+  .flag{
+    font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;
+    padding:5px 10px;border-radius:999px;background:var(--card2);color:var(--dim)
+  }
   .why{
     margin-top:16px;padding-top:14px;border-top:1px solid var(--line);
     color:var(--dim);font-size:14px;text-align:left
@@ -49,12 +54,23 @@
   .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-top:14px}
   .card h2{font-size:11.5px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:12px}
   svg{width:100%;display:block}
-  .legend{display:flex;gap:14px;margin-top:10px;font-size:11.5px;color:var(--dim)}
-  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+  .legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:11.5px;color:var(--dim)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
   .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
   .stat{background:var(--card2);border-radius:11px;padding:11px 13px}
   .stat b{display:block;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px}
   .stat i{font-style:normal;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px}
+  .stat small{display:block;font-size:11px;color:var(--dim);margin-top:2px}
+
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  th,td{text-align:right;padding:9px 4px;font-size:13.5px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  thead th{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+  tbody tr:last-child td{border-bottom:0}
+  td b{font-weight:700}
+  .verdictline{margin-top:12px;font-size:13px;color:var(--dim);line-height:1.55}
+  .verdictline b{color:var(--txt);font-weight:600}
+
   .other{display:flex;align-items:center;justify-content:space-between;gap:12px}
   .pill{font-weight:700;font-size:14px;padding:6px 13px;border-radius:999px;background:var(--card2)}
   footer{margin-top:20px;color:var(--dim);font-size:11.5px;line-height:1.6;text-align:center}
@@ -75,15 +91,27 @@
 
 <footer>
   <div id="meta"></div>
-  <div style="margin-top:8px">MACD <b id="params">12/26/9</b> on closing price &middot; data from Yahoo Finance &middot; rebuilt daily by GitHub Actions</div>
-  <div style="margin-top:8px">A technical-indicator readout, not financial advice. MACD lags price by design and is one input among many.</div>
+  <div style="margin-top:8px" id="rule"></div>
+  <div style="margin-top:8px">A technical-indicator readout, not financial advice.
+  Backtests exclude costs and slippage, and past behaviour is not a forecast.</div>
 </footer>
 
 <script>
 var COLOR = {BUY:'var(--buy)', SELL:'var(--sell)', HOLD:'var(--hold)'};
+var FLAGS = {
+  'regime-veto-buy':  'Regime veto · below 50MA',
+  'regime-veto-sell': 'Regime veto · above 50MA',
+  'extended':         'Overbought · late entry',
+  'washed-out':       'Oversold · bounce risk'
+};
 var DATA = null, KEY = 'weekly';
 
-function F(n){ return n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function F(n, d){
+  if (n === null || n === undefined) return '–';
+  d = d === undefined ? 2 : d;
+  return n.toLocaleString('en-US', {minimumFractionDigits:d, maximumFractionDigits:d});
+}
+function pct(n){ return n === null || n === undefined ? '–' : (n > 0 ? '+' : '') + F(n) + '%'; }
 
 fetch('data.json?' + Date.now())
   .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
@@ -109,61 +137,115 @@ function render(){
   var o = DATA[KEY === 'weekly' ? 'daily' : 'weekly'];
   var otherName = KEY === 'weekly' ? 'Daily' : 'Weekly';
   var bar = KEY === 'weekly' ? 'week' : 'day';
-  var chg = s.last - s.prev, pct = chg / s.prev * 100;
-  var age = s.detail.crossAge;
+  var d = s.detail;
+  var chg = s.last - s.prev, cp = chg / s.prev * 100;
+
+  var flags = (s.notes || []).map(function(n){
+    return '<span class="flag">' + (FLAGS[n] || n) + '</span>';
+  }).join('');
+  var regimeFlag = '<span class="flag" style="color:' +
+    (d.regime === 'uptrend' ? 'var(--buy)' : 'var(--sell)') + '">' +
+    (d.regime === 'uptrend' ? '▲' : '▼') + ' ' + d.regime +
+    ' · ' + pct(d.maGap) + ' vs 50MA</span>';
 
   document.getElementById('app').innerHTML =
     '<section class="verdict" style="--vc:' + COLOR[s.verdict] + '">' +
       '<div class="call">' + s.verdict + '</div>' +
-      '<div class="sub">' + KEY + ' MACD &middot; gold</div>' +
+      '<div class="sub">' + KEY + ' · gold' +
+        (s.raw !== s.verdict ? ' · MACD alone said ' + s.raw : '') + '</div>' +
       '<div class="price">$' + F(DATA.spot) + '</div>' +
       '<div class="chg ' + (chg >= 0 ? 'up' : 'down') + '">' +
         (chg >= 0 ? '▲ ' : '▼ ') + F(Math.abs(chg)) +
-        ' (' + (pct >= 0 ? '+' : '−') + Math.abs(pct).toFixed(2) + '%) this ' + bar +
-      '</div>' +
+        ' (' + (cp >= 0 ? '+' : '−') + F(Math.abs(cp)) + '%) this ' + bar + '</div>' +
+      '<div class="flags">' + regimeFlag + flags + '</div>' +
       '<div class="why">' + s.why + '</div>' +
     '</section>' +
 
-    '<section class="card"><h2>Price &middot; last ' + s.candles.length + ' ' + bar + 's</h2>' +
-      lineChart(s.candles.map(function(c){ return c.c; })) +
+    '<section class="card"><h2>Price vs 50-' + bar + ' average · last ' +
+      s.candles.length + ' ' + bar + 's</h2>' + priceChart(s.candles) +
+      '<div class="legend"><span><i style="background:var(--gold)"></i>Close</span>' +
+      '<span><i style="background:var(--blue)"></i>50 ' + bar + ' MA</span></div>' +
     '</section>' +
 
     '<section class="card"><h2>MACD histogram</h2>' + histChart(s.candles) +
       '<div class="legend">' +
-        '<span><i style="background:#60a5fa"></i>MACD</span>' +
+        '<span><i style="background:var(--blue)"></i>MACD</span>' +
         '<span><i style="background:#f59e0b"></i>Signal</span>' +
-        '<span><i style="background:var(--buy)"></i>Positive bars</span>' +
-        '<span><i style="background:var(--sell)"></i>Negative bars</span>' +
-      '</div>' +
-    '</section>' +
+        '<span><i style="background:var(--buy)"></i>Positive</span>' +
+        '<span><i style="background:var(--sell)"></i>Negative</span>' +
+      '</div></section>' +
 
     '<section class="card"><h2>Readings</h2><div class="grid">' +
-      stat('MACD line', F(s.detail.macd)) +
-      stat('Signal line', F(s.detail.signal)) +
-      stat('Histogram', F(s.detail.hist), s.detail.hist >= 0 ? 'var(--buy)' : 'var(--sell)') +
-      stat('Since cross', age + ' ' + bar + (age === 1 ? '' : 's')) +
+      stat('MACD line', F(d.macd)) +
+      stat('Signal line', F(d.signal)) +
+      stat('Histogram', F(d.hist), d.hist >= 0 ? 'var(--buy)' : 'var(--sell)') +
+      stat('RSI ' + DATA.params.rsi, F(d.rsi, 1),
+           d.rsi >= 70 ? 'var(--sell)' : d.rsi <= 30 ? 'var(--buy)' : null,
+           d.rsi >= 70 ? 'overbought' : d.rsi <= 30 ? 'oversold' : 'neutral') +
+      stat('50-' + bar + ' MA', '$' + F(d.ma, 0)) +
+      stat('Since MACD cross', d.crossAge + ' ' + bar + (d.crossAge === 1 ? '' : 's')) +
     '</div></section>' +
+
+    trackRecord(s, bar) +
 
     '<section class="card other">' +
       '<div><div style="font-size:11.5px;color:var(--dim);letter-spacing:1.1px;text-transform:uppercase">' +
         otherName + ' check</div>' +
         '<div style="font-size:13px;color:var(--dim);margin-top:3px">' +
           (o.verdict === s.verdict ? 'Agrees with the ' + KEY + ' call.'
-                                   : 'Disagrees &mdash; the two timeframes are out of sync.') +
+                                   : 'Disagrees — the timeframes are out of sync.') +
         '</div></div>' +
       '<div class="pill" style="color:' + COLOR[o.verdict] + '">' + o.verdict + '</div>' +
     '</section>';
 
-  document.getElementById('params').textContent =
-    DATA.params.fast + '/' + DATA.params.slow + '/' + DATA.params.signal;
-  var d = new Date(DATA.generated * 1000);
+  var p = DATA.params;
+  document.getElementById('rule').innerHTML =
+    'MACD <b>' + p.fast + '/' + p.slow + '/' + p.signal + '</b> on close, vetoed by the <b>' +
+    p.ma + '-bar MA</b>, flagged by <b>RSI ' + p.rsi + '</b> · ' +
+    'data from Yahoo Finance · rebuilt by GitHub Actions';
+  var when = new Date(DATA.generated * 1000);
   document.getElementById('meta').textContent = s.source + ' · updated ' +
-    d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+    when.toLocaleString('en-US', {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
 }
 
-function stat(label, value, color){
+function stat(label, value, color, note){
   return '<div class="stat"><i>' + label + '</i><b' +
-    (color ? ' style="color:' + color + '"' : '') + '>' + value + '</b></div>';
+    (color ? ' style="color:' + color + '"' : '') + '>' + value + '</b>' +
+    (note ? '<small>' + note + '</small>' : '') + '</div>';
+}
+
+function trackRecord(s, bar){
+  var t = s.test;
+  if (!t || !t.bars) return '';
+  var row = function(name, r, note){
+    return '<tr><td>' + name + (note ? '<br><small style="color:var(--dim)">' + note + '</small>' : '') +
+      '</td><td><b>' + pct(r.cagr) + '</b></td><td style="color:var(--sell)">' + pct(r.maxDD) +
+      '</td><td>' + r.exposure + '%</td></tr>';
+  };
+  var pos = t.position, hold = t.hold;
+  var beat = pos.cagr !== null && hold.cagr !== null && pos.cagr >= hold.cagr;
+  var safer = pos.maxDD !== null && hold.maxDD !== null && pos.maxDD > hold.maxDD;
+
+  var line;
+  if (beat && safer) line = 'Over this window the rule beat buy-and-hold on both return and drawdown.';
+  else if (safer) line = 'The rule <b>lagged buy-and-hold on return</b> but took a shallower worst drawdown — ' +
+    'it trades upside for a smoother ride.';
+  else if (beat) line = 'The rule out-returned buy-and-hold, but rode an equally deep drawdown.';
+  else line = 'Over this window the rule <b>did not beat simply holding gold</b>, on return or on drawdown. ' +
+    'Gold spent most of these years trending up, which is the regime trend-following gives back the most in.';
+
+  return '<section class="card"><h2>Track record · ' + t.years + ' years, ' +
+    t.bars + ' ' + bar + 's</h2>' +
+    '<table><thead><tr><th>Rule</th><th>CAGR</th><th>Max DD</th><th>In market</th></tr></thead><tbody>' +
+      row('Position', pos, 'BUY until SELL, HOLD sits tight') +
+      row('Literal signal', t.signal, 'long only while the light says BUY') +
+      row('Buy &amp; hold', hold, 'never sell') +
+    '</tbody></table>' +
+    '<div class="verdictline">' + line + '<br>' +
+    pos.n + ' completed BUY trades, ' + (pos.winRate === undefined ? '–' : pos.winRate + '%') +
+    ' of them profitable, averaging ' + pct(pos.avg) + ' over ' + pos.avgBars + ' ' + bar + 's ' +
+    '(best ' + pct(pos.best) + ', worst ' + pct(pos.worst) + ').</div>' +
+    '</section>';
 }
 
 /* --- inline charts: no libraries, no network --- */
@@ -175,19 +257,33 @@ function scaler(vals){
   return function(v){ return PAD + (hi - v) / span * (H - PAD * 2); };
 }
 
-function lineChart(vals){
-  var y = scaler(vals), dx = W / (vals.length - 1), pts = [];
-  for (var i = 0; i < vals.length; i++) pts.push((i * dx).toFixed(1) + ',' + y(vals[i]).toFixed(1));
+function poly(vals, y, dx, off){
+  var pts = [];
+  for (var i = 0; i < vals.length; i++){
+    if (vals[i] === null || vals[i] === undefined) continue;
+    pts.push((i * dx + off).toFixed(1) + ',' + y(vals[i]).toFixed(1));
+  }
+  return pts.join(' ');
+}
+
+function priceChart(candles){
+  var cs = candles.map(function(c){ return c.c; });
+  var as = candles.map(function(c){ return c.a; });
+  var known = as.filter(function(v){ return v !== null && v !== undefined; });
+  var y = scaler(cs.concat(known));
+  var dx = W / (candles.length - 1);
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" height="150">' +
-    '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--gold)" stroke-width="2" ' +
-    'stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>';
+    '<polyline points="' + poly(as, y, dx, 0) + '" fill="none" stroke="var(--blue)" ' +
+      'stroke-width="1.5" vector-effect="non-scaling-stroke"/>' +
+    '<polyline points="' + poly(cs, y, dx, 0) + '" fill="none" stroke="var(--gold)" ' +
+      'stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>';
 }
 
 function histChart(candles){
-  var rows = candles.filter(function(c){ return c.h !== null; });
+  var rows = candles.filter(function(c){ return c.h !== null && c.h !== undefined; });
   if (!rows.length) return '';
-  var hs = rows.map(function(c){ return c.h; }).concat([0]);
-  var y = scaler(hs), zero = y(0), bw = W / rows.length, bars = '';
+  var y = scaler(rows.map(function(c){ return c.h; }).concat([0]));
+  var zero = y(0), bw = W / rows.length, bars = '';
   rows.forEach(function(c, i){
     var yy = y(c.h);
     bars += '<rect x="' + (i * bw).toFixed(2) + '" y="' + Math.min(yy, zero).toFixed(1) +
@@ -199,15 +295,13 @@ function histChart(candles){
   var ms = rows.map(function(c){ return c.m; });
   var ss = rows.map(function(c){ return c.s; });
   var y2 = scaler(ms.concat(ss));
-  function path(v){
-    return v.map(function(x, i){ return (i * bw + bw / 2).toFixed(1) + ',' + y2(x).toFixed(1); }).join(' ');
-  }
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" height="150">' + bars +
     '<line x1="0" x2="' + W + '" y1="' + zero.toFixed(1) + '" y2="' + zero.toFixed(1) +
       '" stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"/>' +
-    '<polyline points="' + path(ms) + '" fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke"/>' +
-    '<polyline points="' + path(ss) + '" fill="none" stroke="#f59e0b" stroke-width="1.5" vector-effect="non-scaling-stroke"/>' +
-    '</svg>';
+    '<polyline points="' + poly(ms, y2, bw, bw / 2) + '" fill="none" stroke="var(--blue)" ' +
+      'stroke-width="1.5" vector-effect="non-scaling-stroke"/>' +
+    '<polyline points="' + poly(ss, y2, bw, bw / 2) + '" fill="none" stroke="#f59e0b" ' +
+      'stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>';
 }
 </script>
 </body>
