@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0d0f14">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.gold-api.com; img-src 'self' data:; base-uri 'none'; form-action 'none'">
 <title>Gold Doctor Signal</title>
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%AA%99%3C/text%3E%3C/svg%3E">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%AA%99%3C/text%3E%3C/svg%3E">
@@ -221,26 +221,53 @@ function toast(msg){
   setTimeout(function(){ t.remove(); }, 3600);
 }
 
+// Live spot bullion. This is the only price feed that both permits browser
+// access (CORS) and is allowed by the page's CSP -- Yahoo and Swissquote send no
+// CORS headers, so the futures print cannot be refreshed from here and stays at
+// whatever the last build published.
+var LIVE = null;
+
+function pullLiveBullion(){
+  return fetch('https://api.gold-api.com/price/XAU', {cache: 'no-store'})
+    .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
+    .then(function(d){
+      var px = Number(d && d.price);
+      if (!(px > 100 && px < 100000)) throw 'implausible price';
+      LIVE = {price: px, at: Math.floor(Date.now() / 1000), quotedAt: d.updatedAt || null};
+      return LIVE;
+    })
+    .catch(function(){ return null; });
+}
+
 function pull(announce){
   var btn = document.getElementById('refresh');
   if (btn && btn.dataset.busy === '1') return;
   if (btn) btn.dataset.busy = '1';
   var before = DATA ? DATA.generated : 0;
+  var beforePx = LIVE ? LIVE.price : null;
   // cache: 'no-store' plus a cache-busting query, because the CDN will happily
   // serve the copy this page already has otherwise.
   return fetch('data.json?t=' + Date.now(), {cache: 'no-store'})
     .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
-    .then(function(d){
-      DATA = d;
+    .then(function(d){ DATA = d; return pullLiveBullion(); })
+    .then(function(){
+      var d = DATA;
       render();
       if (announce){
         // The page can only re-pull what the builder last published; it cannot
         // rebuild it. Say which of those happened rather than implying a fetch
         // of live market data.
-        var age = Math.round((Date.now() / 1000 - d.generated) / 60);
-        toast(d.generated > before
-          ? 'Updated \u2014 new data from ' + (age < 60 ? age + ' min' : Math.round(age / 60) + ' h') + ' ago'
-          : 'Already current \u2014 nothing new published since the last rebuild');
+        var bits = [];
+        if (LIVE){
+          bits.push(beforePx && Math.abs(LIVE.price - beforePx) > 0.005
+            ? 'Bullion $' + F(LIVE.price) + ' (' +
+              (LIVE.price > beforePx ? '+' : '\u2212') + F(Math.abs(LIVE.price - beforePx)) + ')'
+            : 'Bullion $' + F(LIVE.price) + ' live');
+        } else {
+          bits.push('Live bullion feed unreachable');
+        }
+        bits.push(d.generated > before ? 'new build pulled' : 'analysis unchanged');
+        toast(bits.join(' \u00b7 '));
       }
     })
     .catch(function(e){
@@ -300,6 +327,7 @@ function render(){
     '</section>' +
 
     hero(s, bar) +
+    basisCard() +
 
     '<section class="card"><h2>Price vs 50-' + bar + ' average · last ' +
       s.candles.length + ' ' + bar + 's</h2>' + priceChart(s.candles) +
@@ -329,7 +357,6 @@ function render(){
     proximity(s, bar) +
     trackRecord(s, bar) +
     heatmap(s) +
-    basisCard() +
     scorecard(s, bar) +
     learning(s, bar) +
     saved(s, bar) +
@@ -407,29 +434,46 @@ function priceRows(s, bar, chg, cp){
   var rows =
     '<div class="prow">' +
       '<div><div class="lbl">Futures</div>' +
-        '<div class="sub2">' + (s.source || 'COMEX') + ' \u00b7 front month</div></div>' +
+        '<div class="sub2">' + (s.source || 'COMEX') + ' \u00b7 last build \u00b7 ' +
+          agoText(DATA.generated) + '</div></div>' +
       '<div class="val">$' + F(DATA.spot) + '</div>' +
     '</div>';
 
-  if (b && b.price){
+  var px = LIVE ? LIVE.price : (b && b.price);
+  var srcTxt = LIVE
+    ? 'spot XAU/USD \u00b7 live \u00b7 ' + agoText(LIVE.at)
+    : (b ? 'spot XAU/USD \u00b7 ' + esc(b.source) : '');
+  if (px){
     rows +=
       '<div class="prow bull">' +
         '<div><div class="lbl" style="color:var(--buy)">Bullion</div>' +
-          '<div class="sub2">spot XAU/USD \u00b7 ' + esc(b.source) + '</div></div>' +
-        '<div class="val" style="color:var(--buy)">$' + F(b.price) + '</div>' +
+          '<div class="sub2">' + srcTxt + '</div></div>' +
+        '<div class="val" style="color:var(--buy)">$' + F(px) + '</div>' +
       '</div>';
   }
 
   // The gap is the interesting part: it is the future's financing premium, not
   // a disagreement between the two feeds.
-  var spread = (b && b.premium !== undefined && b.premium !== null)
-    ? '<div class="spread">Futures trade ' +
-        (b.premium >= 0 ? '+' : '') + F(b.premium) + '% ' +
-        (b.premium >= 0 ? 'above' : 'below') + ' spot \u2014 $' +
-        F(Math.abs(DATA.spot - b.price), 0) + ' of carry</div>'
-    : '';
+  // The futures leg cannot be refreshed in the browser, so a live bullion price
+  // against a stale settle would print a carry number that means nothing.
+  var futAge = (Date.now() / 1000 - DATA.generated) / 3600;
+  var spread = '';
+  if (px && futAge < 6){
+    var prem = (DATA.spot - px) / px * 100;
+    spread = '<div class="spread">Futures trade ' + (prem >= 0 ? '+' : '') + F(prem) + '% ' +
+      (prem >= 0 ? 'above' : 'below') + ' spot \u2014 $' + F(Math.abs(DATA.spot - px), 0) +
+      ' of carry</div>';
+  } else if (px){
+    spread = '<div class="spread">Futures print is ' + Math.round(futAge) +
+      'h old \u2014 carry needs both legs quoted together</div>';
+  }
 
   return '<div class="prices">' + rows + '</div>' + spread + chgHtml;
+}
+
+function agoText(ts){
+  var m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
+  return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago';
 }
 
 function freshness(){

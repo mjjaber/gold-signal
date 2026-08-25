@@ -404,14 +404,19 @@ user input. Notes for anyone auditing it:
 
 - **No secrets anywhere.** Every data source is keyless (Yahoo Finance chart endpoints), so
   the public repo holds no credentials. Nothing needs rotating if the repo is forked.
-- **Visitors never talk to a third party.** All price fetching happens server-side in the
-  GitHub Action. The browser makes exactly one request — a relative `data.json` on its own
-  origin — so no visitor IP ever reaches Yahoo, and there is no CDN, analytics, font host,
-  or tracker on the page.
+- **One third-party call, by design.** The refresh button fetches a live spot bullion quote
+  from `api.gold-api.com`, the only price feed that both sends CORS headers and is allowed by
+  the CSP. Everything else — futures, history, every signal — is fetched server-side in the
+  GitHub Action, so the browser otherwise talks only to its own origin. No CDN, analytics,
+  font host, or tracker.
+  Yahoo and Swissquote send no CORS headers, so the **futures** print cannot be refreshed
+  from the browser and always shows the last build's value, labelled with its age. The carry
+  line is suppressed when the futures leg is over 6 hours old rather than printing a
+  meaningless number against a live spot.
 - **Saved predictions are per-device.** They live in `localStorage`, scoped to the origin.
   Nothing is uploaded, nothing is shared between visitors, and one person's saves are
   invisible to everyone else. Clearing site data erases them.
-- **CSP is set via meta tag**: `default-src 'none'` with `connect-src 'self'`, so even a
+- **CSP is set via meta tag**: `default-src 'none'` with `connect-src 'self' https://api.gold-api.com`, so even a
   poisoned `data.json` has no route to send anything anywhere. `frame-ancestors` is omitted
   because it is ignored in meta form; clickjacking cover would need response headers, which
   GitHub Pages does not offer.
