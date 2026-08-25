@@ -63,7 +63,7 @@
   .stat small{display:block;font-size:11px;color:var(--dim);margin-top:2px}
 
   table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-  th,td{text-align:right;padding:9px 4px;font-size:13.5px;border-bottom:1px solid var(--line)}
+  th,td{text-align:right;padding:9px 3px;font-size:13px;border-bottom:1px solid var(--line)}
   th:first-child,td:first-child{text-align:left}
   thead th{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
   tbody tr:last-child td{border-bottom:0}
@@ -262,52 +262,63 @@ function trackRecord(s, bar){
 function proximity(s, bar){
   var p = s.proximity;
   if (!p || !p.table) return '';
-  var h = String(p.horizons[p.horizons.length - 1]);
-  var base = p.baseline[h];
   var unit = bar === 'week' ? 'w' : 'd';
+  var base = p.baseline;
+
+  var cellFor = function(f, b){
+    if (!f) return '<td style="color:var(--dim)">–</td>';
+    var strong = b && f.mean > b.mean;
+    return '<td style="color:' + (strong ? 'var(--buy)' : 'var(--dim)') + '">' +
+      (f.mean > 0 ? '+' : '') + f.mean.toFixed(1) + '</td>';
+  };
 
   var rows = p.table.map(function(b){
-    var f = b.fwd[h];
     var here = b.label === p.now.bucket;
     var range = b.hi === null ? b.lo + '%+' : b.lo + '–' + b.hi + '%';
-    if (!f) return '<tr' + (here ? ' style="background:var(--card2)"' : '') +
-      '><td>' + b.label + '<br><small style="color:var(--dim)">' + range + ' off high</small></td>' +
-      '<td colspan="3" style="color:var(--dim);text-align:center">too few samples</td></tr>';
-    var strong = f.mean > base.mean;
+    var mark = b.stable === null ? '<span style="color:var(--dim)">–</span>'
+             : b.stable ? '<span style="color:var(--buy)">✓</span>'
+                        : '<span style="color:var(--sell)">✗</span>';
     return '<tr' + (here ? ' style="background:var(--card2)"' : '') + '>' +
       '<td>' + (here ? '<b style="color:var(--gold)">▸ ' + b.label + '</b>' : b.label) +
-        '<br><small style="color:var(--dim)">' + range + ' off high</small></td>' +
-      '<td style="color:' + (strong ? 'var(--buy)' : 'var(--dim)') + '"><b>' + pct(f.mean) + '</b></td>' +
-      '<td>' + f.win + '%</td><td style="color:var(--dim)">' + f.n + '</td></tr>';
+        '<br><small style="color:var(--dim)">' + range + ' off high' +
+        (b.fwd.all ? ' · n=' + b.fwd.all.n : '') + '</small></td>' +
+      cellFor(b.fwd.all, base.all) +
+      cellFor(b.fwd.first, base.first) +
+      cellFor(b.fwd.second, base.second) +
+      '<td>' + mark + '</td></tr>';
   }).join('');
 
+  var stable = 0, rated = 0;
+  p.table.forEach(function(b){ if (b.stable !== null){ rated++; if (b.stable) stable++; } });
   var cur = null;
-  for (var i = 0; i < p.table.length; i++) if (p.table[i].label === p.now.bucket) cur = p.table[i];
-  var cf = cur && cur.fwd[h];
-  var note;
-  if (!cf){
-    note = 'Too few historical samples in this zone to say anything.';
-  } else if (cf.mean > base.mean){
-    note = 'Gold is <b>' + p.now.drawdown + '% off its period high</b> — the "' + p.now.bucket +
-      '" zone, which historically ran <b>' + pct(cf.mean) + '</b> over the next ' + h + unit +
-      ' against an all-weeks average of ' + pct(base.mean) + '.';
-  } else {
-    note = 'Gold is <b>' + p.now.drawdown + '% off its period high</b> — the "' + p.now.bucket +
-      '" zone, which historically ran <b>' + pct(cf.mean) + '</b> over the next ' + h + unit +
-      ', <b>below</b> the all-weeks average of ' + pct(base.mean) + '.';
-  }
+  p.table.forEach(function(b){ if (b.label === p.now.bucket) cur = b; });
 
-  return '<section class="card"><h2>Where gold sits · forward returns by zone</h2>' +
-    '<table><thead><tr><th>Zone</th><th>Next ' + h + unit + '</th><th>Win</th><th>n</th></tr></thead>' +
+  var note = 'Gold is <b>' + p.now.drawdown + '% off its period high</b> — the "' +
+    p.now.bucket + '" zone' +
+    (cur && cur.fwd.all ? ', which averaged <b>' + pct(cur.fwd.all.mean) + '</b> over the next ' +
+      p.horizon + unit + ' against a ' + pct(base.all.mean) + ' baseline' : '') + '. ' +
+    (cur && cur.stable === false
+      ? '<b style="color:var(--sell)">That zone flips sides between the two halves of the record</b> — treat it as noise.'
+      : cur && cur.stable
+        ? 'It landed the same side of baseline in both halves, which is the weaker claim worth making.'
+        : '');
+
+  var caveat = 'Read the split columns, not the full-window one. Scored across all 25 years the ' +
+    'zones decline neatly with depth and it looks like a law; scored per half, only <b>' + stable +
+    ' of ' + rated + '</b> stay on the same side of their own era&rsquo;s baseline. The same test on ' +
+    'silver, the S&amp;P and crude reorders the buckets entirely. Windows overlap heavily, so the ' +
+    'effective sample is far smaller than n suggests.';
+
+  return '<section class="card"><h2>Where gold sits · forward ' + p.horizon + unit + ' returns</h2>' +
+    '<table><thead><tr><th>Zone</th><th>All</th><th>1st half</th><th>2nd half</th><th>Same?</th></tr></thead>' +
     '<tbody>' + rows +
-    '<tr><td><b>Any week</b><br><small style="color:var(--dim)">baseline</small></td>' +
-      '<td><b>' + pct(base.mean) + '</b></td><td>' + base.win + '%</td>' +
-      '<td style="color:var(--dim)">' + base.n + '</td></tr>' +
+    '<tr><td><b>Any ' + bar + '</b><br><small style="color:var(--dim)">baseline</small></td>' +
+      '<td><b>' + (base.all ? pct(base.all.mean) : '–') + '</b></td>' +
+      '<td style="color:var(--dim)">' + (base.first ? base.first.mean.toFixed(1) : '–') + '</td>' +
+      '<td style="color:var(--dim)">' + (base.second ? base.second.mean.toFixed(1) : '–') + '</td>' +
+      '<td></td></tr>' +
     '</tbody></table>' +
-    '<div class="verdictline">' + note +
-    '<br>Shallow dips near the highs beat deep ones by a wide margin — on gold, ' +
-    'buying weakness has been the worse trade. Windows overlap, so treat these as a ' +
-    'description of the record rather than a significance test.</div></section>';
+    '<div class="verdictline">' + note + '<br><br>' + caveat + '</div></section>';
 }
 
 function heatmap(s){

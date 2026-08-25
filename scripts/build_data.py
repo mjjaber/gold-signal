@@ -394,42 +394,49 @@ def _bucket_of(dd):
     return BUCKETS[-1][2]
 
 
-def proximity(closes, ma, horizons):
-    """For each drawdown-from-high bucket, what actually happened next.
+def _fwd_stats(closes, rows, h, min_n):
+    n = len(closes)
+    xs = [(closes[i + h] - closes[i]) / closes[i] * 100 for i in rows if i + h < n]
+    if len(xs) < min_n:
+        return None
+    return {"mean": round(sum(xs) / len(xs), 2),
+            "win": round(sum(1 for x in xs if x > 0) / len(xs) * 100),
+            "n": len(xs)}
 
-    Entries overlap, so the effective sample is smaller than n suggests -- this
-    is a description of the record, not a significance test.
+
+def proximity(closes, ma, horizon, min_n=20):
+    """For each drawdown-from-high bucket, what actually happened next -- scored
+    over the full window and over each half separately.
+
+    The split is the point. Measured on the full window alone the buckets decline
+    neatly with depth, which reads as a law; scored per half that ordering does not
+    survive, so the page shows both rather than the flattering aggregate.
     """
     peaks = _running_max(closes)
     n = len(closes)
     dd = [(peaks[i] - closes[i]) / peaks[i] * 100 for i in range(n)]
+    mid = n // 2
+    windows = {"all": range(n), "first": range(mid), "second": range(mid, n)}
+
+    base = {k: _fwd_stats(closes, list(w), horizon, min_n) for k, w in windows.items()}
 
     table = []
     for lo, hi, label in BUCKETS:
-        rows = [i for i in range(n) if lo <= dd[i] < hi]
-        entry = {"label": label, "lo": lo, "hi": None if hi > 1e8 else hi,
-                 "n": len(rows), "fwd": {}}
-        for h in horizons:
-            xs = [(closes[min(i + h, n - 1)] - closes[i]) / closes[i] * 100
-                  for i in rows if i + h < n]
-            if len(xs) >= 20:
-                entry["fwd"][str(h)] = {
-                    "mean": round(sum(xs) / len(xs), 2),
-                    "win": round(sum(1 for x in xs if x > 0) / len(xs) * 100),
-                    "n": len(xs),
-                }
+        entry = {"label": label, "lo": lo, "hi": None if hi > 1e8 else hi, "fwd": {}}
+        for key, w in windows.items():
+            rows = [i for i in w if lo <= dd[i] < hi]
+            entry["fwd"][key] = _fwd_stats(closes, rows, horizon, min_n)
+        # Stable only if it lands the same side of its own era's baseline in both halves.
+        a, b = entry["fwd"]["first"], entry["fwd"]["second"]
+        if a and b and base["first"] and base["second"]:
+            entry["stable"] = (a["mean"] > base["first"]["mean"]) ==                               (b["mean"] > base["second"]["mean"])
+        else:
+            entry["stable"] = None
         table.append(entry)
-
-    base = {}
-    for h in horizons:
-        xs = [(closes[i + h] - closes[i]) / closes[i] * 100 for i in range(n - h)]
-        base[str(h)] = {"mean": round(sum(xs) / len(xs), 2),
-                        "win": round(sum(1 for x in xs if x > 0) / len(xs) * 100),
-                        "n": len(xs)}
 
     i = n - 1
     return {
-        "horizons": horizons,
+        "horizon": horizon,
         "baseline": base,
         "table": table,
         "now": {
@@ -498,8 +505,7 @@ def series(interval, points):
                 "history": len(rows),
                 "test": test,
                 "grid": sensitivity(closes, ma, test["hold"]["cagr"], bpy),
-                "proximity": proximity(closes, ma,
-                                       [13, 26, 52] if interval == "1wk" else [63, 126, 252]),
+                "proximity": proximity(closes, ma, 52 if interval == "1wk" else 252),
                 "candles": [
                     {"t": rows[i]["t"], "c": round(rows[i]["c"], 2),
                      "m": r3(line[i]), "s": r3(sig[i]), "h": r3(hist[i]),
@@ -551,12 +557,14 @@ def main():
               f"(spread {g['spread']}), live rank {g['liveRank']}, "
               f"{g['beatHold']} beat hold")
         pr = s["proximity"]
-        h = str(pr["horizons"][-1])
         cur = next(b for b in pr["table"] if b["label"] == pr["now"]["bucket"])
+        stable = sum(1 for b in pr["table"] if b["stable"])
+        rated = sum(1 for b in pr["table"] if b["stable"] is not None)
+        f = cur["fwd"]["all"]
         print(f"    now {pr['now']['drawdown']}% off high -> '{pr['now']['bucket']}': "
-              f"{cur['fwd'].get(h, {}).get('mean')}% mean {h}-bar fwd "
-              f"({cur['fwd'].get(h, {}).get('win')}% win) vs baseline "
-              f"{pr['baseline'][h]['mean']}% ({pr['baseline'][h]['win']}%)")
+              f"{f['mean'] if f else None}% fwd vs baseline "
+              f"{pr['baseline']['all']['mean']}% | {stable}/{rated} buckets "
+              f"hold their side of baseline in both halves")
     print(f"-> {os.path.normpath(OUT)}")
 
 

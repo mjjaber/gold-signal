@@ -107,29 +107,35 @@ MACD, RSI and moving averages are all transforms of one close-price series. Agre
 between them reads like corroboration and is closer to double-counting, which is why
 adding the regime filter and RSI guard moved the backtest so little.
 
-## What finally beat the baseline: proximity to the high
+## Proximity to the high, and why it does not survive its own stress test
 
-Every price-derived *timing* rule tested here underperformed buy-and-hold. One
-*conditional* reading did not. Bucketing all 1358 weekly bars by drawdown from the
-running high, and measuring the mean return over the following 52 weeks:
+Bucketing all 1358 weekly bars by drawdown from the running high and measuring the next
+52 weeks produces a clean, monotonic-looking result over the full window:
 
-| Zone | Next 52w | Win rate | n |
-|---|---|---|---|
-| At the highs (0–2% off) | **+20.06%** | 91% | 275 |
-| Shallow dip (2–5% off) | **+20.69%** | 93% | 216 |
-| Moderate dip (5–10% off) | +13.60% | 74% | 260 |
-| Correction (10–20% off) | +8.04% | 74% | 204 |
-| Bear market (20%+ off) | +5.68% | 57% | 351 |
-| *Any week (baseline)* | *+13.13%* | *76%* | *1306* |
+| Zone | All | 1st half | 2nd half | Same side? |
+|---|---|---|---|---|
+| At the highs (0–2%) | +20.1% | +13.3% | +37.1% | ✗ |
+| Shallow dip (2–5%) | +20.7% | +18.4% | +25.4% | ✓ |
+| Moderate dip (5–10%) | +13.6% | +17.0% | +4.4% | ✗ |
+| Correction (10–20%) | +8.0% | +6.3% | +10.5% | ✓ |
+| Bear market (20%+) | +5.7% | +10.7% | +5.2% | ✓ |
+| *Baseline* | *+13.1%* | *+14.1%* | *+12.1%* | |
 
-Gold near its high kept going; gold far below its high stayed weak. **Buying the dip has
-been the worse trade on gold** — the deeper the dip, the worse the next year, monotonically
-across every bucket. Adding the uptrend filter sharpens it further: the 2–5% zone above the
-50-week MA ran +21.93% with a 92% win rate.
+Read only the "All" column and it looks like a law: returns decline monotonically with
+depth, so buying the dip is the worse trade. Split the record in half and that ordering
+falls apart. "At the highs" **lagged** its era's baseline in 2000–2013 and beat it by 25
+points in 2013–2026. "Moderate dip" beat baseline in the first half and badly lagged in
+the second. Only 3 of 5 buckets stay on the same side of baseline in both halves, and two
+of those three are the low-return zones.
 
-Caveat that matters: the forward windows overlap heavily, so the effective sample is far
-smaller than n suggests, and this is one asset over one 25-year window that was mostly a
-secular bull. It is a description of the record, not a significance test.
+The same test on other assets reorders the buckets outright: on silver the 10–20% zone was
+the *best* (+30.6%), on the S&P the 20%+ zone beat baseline, and on crude the 0–2% zone was
+*negative*. There is no general "near highs is good" effect here — there is one asset in
+one 25-year window that was mostly a secular bull.
+
+The page now shows the split columns next to the aggregate, because the aggregate on its
+own is misleading. The honest residue is narrow: the 2–5% shallow-dip zone beat baseline in
+both halves, and deep drawdowns were unexciting in both. That is all.
 
 ## Corrected: the RSI guard was backwards
 
