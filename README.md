@@ -60,6 +60,53 @@ Adding the regime filter was measured, not assumed. On the position rule it rais
 it made both worse. It is kept because it cuts counter-trend entries, but the numbers
 are mixed and it is one constant away from being switched off.
 
+## Parameter sensitivity
+
+The page also sweeps a 7x7 grid of MACD fast/slow settings and scores each with the same
+position rule. Over 25 years of weekly bars, all 46 valid combinations land between
+**+7.44% and +8.64% CAGR** — a spread of 1.2 points, and **none of them beat buy-and-hold
+at +11.95%**. The live 12/26/9 ranks 24th of 46, dead mid-pack.
+
+The tight clustering is the useful part. A lone profitable spike surrounded by losers
+would mean the setting was curve-fit to noise; a flat plateau means the result is stable
+and real. Here it is stably mediocre, which says the underperformance is structural — the
+cost of sitting out ~27% of the time in an asset that trended up — and not something
+another parameter sweep will fix.
+
+## Rejected: the dollar filter
+
+The dollar index correlates **−0.46** with weekly gold returns, far and away the
+strongest external candidate tested (10y real yields managed −0.06, silver and miners are
+so correlated with gold at +0.78/+0.80 that they are echoes rather than inputs). It still
+did not ship, because that correlation is entirely contemporaneous:
+
+| Dollar move at week t vs gold return at | Correlation |
+|---|---|
+| week t | −0.462 |
+| week t+1 | +0.026 |
+| week t+2 | −0.005 |
+| week t+4 | −0.010 |
+
+And conditioning next-week gold returns on dollar regime splits them +0.249% (dollar
+below its 50MA) versus +0.244% (above) — identical, both 57% win rate. The dollar
+*explains* gold after the fact and *forecasts* nothing. Wired in as a veto it made the
+backtest worse: 6.22% → 4.94% CAGR alone, 8.11% → 7.88% alongside the regime filter.
+
+## A note on stacking indicators
+
+Measured over the same window, the things this app already shows are substantially the
+same signal:
+
+| Pair | Correlation |
+|---|---|
+| RSI vs %-from-50MA | +0.88 |
+| MACD histogram vs RSI | +0.52 |
+| MACD histogram vs %-from-50MA | +0.36 |
+
+MACD, RSI and moving averages are all transforms of one close-price series. Agreement
+between them reads like corroboration and is closer to double-counting, which is why
+adding the regime filter and RSI guard moved the backtest so little.
+
 ## Local development
 
 ```bash

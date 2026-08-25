@@ -23,6 +23,10 @@ FAST, SLOW, SIGNAL = 12, 26, 9
 MA_LEN = 50          # regime filter length, in bars of whatever timeframe
 RSI_LEN = 14
 RSI_HOT, RSI_COLD = 70, 30
+# Grid for the sensitivity map. The point is not to find the best cell -- it is to
+# see whether the live setting sits on a plateau (robust) or a lone spike (curve-fit).
+GRID_FAST = [5, 8, 10, 12, 15, 18, 21]
+GRID_SLOW = [17, 21, 26, 30, 34, 40, 50]
 # COMEX gold future first, spot as fallback. Ranges are per-symbol: Yahoo
 # truncates "max" on weekly to a sparse 267 bars, and the spot symbol has no
 # deep weekly history at all, so each source states what it can actually serve.
@@ -306,6 +310,66 @@ def backtest(closes, line, sig, hist, ma, rs, bars_per_year):
     }
 
 
+# ---------------------------------------------------------------- sensitivity
+
+def _position_cagr(closes, ma, fast, slow, signal, bars_per_year):
+    """CAGR of the position rule for one parameter triple. Same rule as live."""
+    line, sig, hist = macd(closes, fast, slow, signal)
+    states, cur = [], None
+    for i in range(len(closes)):
+        raw = raw_state(line, sig, hist, i)
+        if raw is None or ma[i] is None:
+            states.append(None)
+            continue
+        v = raw
+        if raw == "BUY" and closes[i] <= ma[i]:
+            v = "HOLD"
+        elif raw == "SELL" and closes[i] > ma[i]:
+            v = "HOLD"
+        if v in ("BUY", "SELL"):
+            cur = v
+        states.append(cur)
+    start = next((i for i, v in enumerate(states) if v is not None), len(states))
+    if start >= len(closes) - 2:
+        return None
+    eq = 1.0
+    for i in range(start, len(closes) - 1):
+        if states[i] == "BUY":
+            eq *= closes[i + 1] / closes[i]
+    return _cagr(eq, (len(closes) - 1 - start) / bars_per_year)
+
+
+def sensitivity(closes, ma, hold_cagr, bars_per_year):
+    """Sweep fast/slow at the live signal length, so the page can show whether
+    12/26/9 is a plateau or a fluke."""
+    matrix, flat = [], []
+    for f in GRID_FAST:
+        row = []
+        for sl in GRID_SLOW:
+            v = None if f >= sl else _position_cagr(closes, ma, f, sl, SIGNAL, bars_per_year)
+            row.append(None if v is None else round(v, 2))
+            if v is not None:
+                flat.append(v)
+        matrix.append(row)
+
+    live = _position_cagr(closes, ma, FAST, SLOW, SIGNAL, bars_per_year)
+    ranked = sorted(flat, reverse=True)
+    ordered = sorted(flat)
+    return {
+        "fast": GRID_FAST,
+        "slow": GRID_SLOW,
+        "matrix": matrix,
+        "live": None if live is None else round(live, 2),
+        "liveRank": (ranked.index(live) + 1) if live in ranked else None,
+        "n": len(flat),
+        "best": round(max(flat), 2) if flat else None,
+        "worst": round(min(flat), 2) if flat else None,
+        "median": round(ordered[len(ordered) // 2], 2) if flat else None,
+        "beatHold": sum(1 for v in flat if hold_cagr is not None and v >= hold_cagr),
+        "spread": round(max(flat) - min(flat), 2) if flat else None,
+    }
+
+
 # ---------------------------------------------------------------- assembly
 
 def series(interval, points):
@@ -323,6 +387,8 @@ def series(interval, points):
             rs = rsi(closes)
             n = len(closes) - 1
 
+            bpy = 52 if interval == "1wk" else 252
+            test = backtest(closes, line, sig, hist, ma, rs, bpy)
             verdict, notes = evaluate(closes, line, sig, hist, ma, rs, n)
             if verdict is None:
                 raise ValueError("indicators not warmed up")
@@ -359,8 +425,8 @@ def series(interval, points):
                 "last": round(closes[n], 2),
                 "prev": round(closes[n - 1], 2),
                 "history": len(rows),
-                "test": backtest(closes, line, sig, hist, ma, rs,
-                                 52 if interval == "1wk" else 252),
+                "test": test,
+                "grid": sensitivity(closes, ma, test["hold"]["cagr"], bpy),
                 "candles": [
                     {"t": rows[i]["t"], "c": round(rows[i]["c"], 2),
                      "m": r3(line[i]), "s": r3(sig[i]), "h": r3(hist[i]),
@@ -407,6 +473,10 @@ def main():
               f"position {t['position']['cagr']}% dd{t['position']['maxDD']}% "
               f"(n={t['position']['n']}, win {t['position'].get('winRate')}%)  |  "
               f"hold {t['hold']['cagr']}% dd{t['hold']['maxDD']}%")
+        g = s["grid"]
+        print(f"    grid: {g['n']} combos, {g['worst']}%..{g['best']}% "
+              f"(spread {g['spread']}), live rank {g['liveRank']}, "
+              f"{g['beatHold']} beat hold")
     print(f"-> {os.path.normpath(OUT)}")
 
 

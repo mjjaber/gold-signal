@@ -71,6 +71,15 @@
   .verdictline{margin-top:12px;font-size:13px;color:var(--dim);line-height:1.55}
   .verdictline b{color:var(--txt);font-weight:600}
 
+  .heat{width:100%;border-collapse:separate;border-spacing:2px;font-variant-numeric:tabular-nums}
+  .heat th{font-size:10px;color:var(--dim);font-weight:600;padding:2px;letter-spacing:.5px}
+  .heat td{
+    text-align:center;font-size:10.5px;font-weight:600;padding:7px 2px;
+    border-radius:5px;color:#0d0f14;background:var(--card2)
+  }
+  .heat td.na{background:transparent}
+  .heat td.live{outline:2px solid var(--gold);outline-offset:-2px;color:#0d0f14}
+  .axis{font-size:10.5px;color:var(--dim);text-align:center;margin-top:8px;letter-spacing:.5px}
   .other{display:flex;align-items:center;justify-content:space-between;gap:12px}
   .pill{font-weight:700;font-size:14px;padding:6px 13px;border-radius:999px;background:var(--card2)}
   footer{margin-top:20px;color:var(--dim);font-size:11.5px;line-height:1.6;text-align:center}
@@ -187,6 +196,7 @@ function render(){
     '</div></section>' +
 
     trackRecord(s, bar) +
+    heatmap(s) +
 
     '<section class="card other">' +
       '<div><div style="font-size:11.5px;color:var(--dim);letter-spacing:1.1px;text-transform:uppercase">' +
@@ -246,6 +256,51 @@ function trackRecord(s, bar){
     ' of them profitable, averaging ' + pct(pos.avg) + ' over ' + pos.avgBars + ' ' + bar + 's ' +
     '(best ' + pct(pos.best) + ', worst ' + pct(pos.worst) + ').</div>' +
     '</section>';
+}
+
+function heatmap(s){
+  var g = s.grid, t = s.test;
+  if (!g || !g.matrix) return '';
+  var hold = t.hold.cagr;
+  // Colour by distance from buy-and-hold, so "nothing here beats it" is visible
+  // at a glance rather than buried in the numbers.
+  var lo = g.worst, hi = Math.max(g.best, hold);
+  var cell = function(v, f, sl){
+    if (v === null) return '<td class="na"></td>';
+    var k = (v - lo) / ((hi - lo) || 1);
+    var bg = 'hsl(' + Math.round(8 + k * 130) + ' 62% ' + Math.round(38 + k * 24) + '%)';
+    var live = (f === DATA.params.fast && sl === DATA.params.slow) ? ' live' : '';
+    return '<td class="' + live.trim() + '" style="background:' + bg + '">' + v.toFixed(1) + '</td>';
+  };
+  var head = '<tr><th></th>' + g.slow.map(function(x){ return '<th>' + x + '</th>'; }).join('') + '</tr>';
+  var body = g.matrix.map(function(row, i){
+    return '<tr><th>' + g.fast[i] + '</th>' +
+      row.map(function(v, j){ return cell(v, g.fast[i], g.slow[j]); }).join('') + '</tr>';
+  }).join('');
+
+  var verdict;
+  if (g.beatHold === 0){
+    verdict = 'Not one of the ' + g.n + ' settings beat buy-and-hold (' + pct(hold) + '). ' +
+      'They all land between ' + pct(g.worst) + ' and ' + pct(g.best) + ' — a spread of just ' +
+      g.spread + ' points. <b>That tight clustering is the finding:</b> the result is stable, ' +
+      'not curve-fit, so there is no setting to tune your way to an edge here.';
+  } else {
+    verdict = g.beatHold + ' of ' + g.n + ' settings beat buy-and-hold (' + pct(hold) + '), ' +
+      'across a ' + g.spread + '-point spread. A broad cluster of winners suggests a real effect; ' +
+      'one lone bright cell would suggest luck.';
+  }
+
+  return '<section class="card"><h2>Parameter sensitivity · position-rule CAGR</h2>' +
+    '<table class="heat"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>' +
+    '<div class="axis">rows = fast EMA · columns = slow EMA · signal fixed at ' +
+      DATA.params.signal + ' · gold outline = live setting</div>' +
+    '<div class="verdictline">' + verdict + '<br>Your ' + DATA.params.fast + '/' +
+      DATA.params.slow + '/' + DATA.params.signal + ' returns ' + pct(g.live) +
+      ', ranking <b>' + g.liveRank + ' of ' + g.n + '</b> — ' +
+      (g.liveRank <= g.n / 3 ? 'near the top of the range.'
+        : g.liveRank >= g.n * 2 / 3 ? 'near the bottom of the range.'
+        : 'squarely mid-pack, which is what a non-special setting looks like.') +
+    '</div></section>';
 }
 
 /* --- inline charts: no libraries, no network --- */
