@@ -149,6 +149,28 @@ def audit_output():
     else:
         print("  WARN  no bullion quote in this build")
 
+    bs = d.get("basis")
+    if bs:
+        check("basis percentile is in range", 0 <= bs["percentile"] <= 100,
+              f"{bs['percentile']}th, zone '{bs['zone']}'")
+        check("basis zone matches its own thresholds",
+              (bs["zone"] == "high" and bs["avg"] >= bs["cuts"]["high"]) or
+              (bs["zone"] == "low" and bs["avg"] <= bs["cuts"]["low"]) or
+              (bs["zone"] == "middle" and bs["cuts"]["low"] < bs["avg"] < bs["cuts"]["high"]),
+              f"avg {bs['avg']} vs cuts {bs['cuts']}")
+        check("basis zone stats present for the live zone",
+              bs["zones"].get(bs["zone"]) is not None)
+        # The whole effect is an artefact without the one-session entry delay,
+        # so the horizon must be scored from the NEXT fix, never the current one.
+        wf = bs.get("walkForward")
+        check("walk-forward result is reported", wf is not None,
+              f"edge {wf['edge']}pp over n={wf['n']}" if wf else "missing")
+        check("per-year breakdown is reported and honest",
+              bs["yearsTotal"] >= 5 and bs["yearsPositive"] <= bs["yearsTotal"],
+              f"positive in {bs['yearsPositive']}/{bs['yearsTotal']} years")
+    else:
+        print("  WARN  no basis signal in this build")
+
     print("\n=== ledger ===")
     live = [e for e in led["entries"] if not e.get("backfilled")]
     # The invariant that matters is that an entry's price IS the close of the bar
@@ -157,9 +179,13 @@ def audit_output():
     closes_at = {}
     for tf, iv, rng in (("weekly", "1wk", "30y"), ("daily", "1d", "10y")):
         closes_at[tf] = {r["t"]: r["c"] for r in B.candles(B.fetch("GC=F", iv, rng))}
+    try:
+        closes_at["basis"] = {B._day_ts(k): v for k, v in B.lbma_fixes().items()}
+    except Exception as exc:  # noqa: BLE001
+        print(f"  WARN  could not load LBMA fixes to verify basis entries: {exc}")
     mism = []
     for e in live:
-        actual = closes_at[e["timeframe"]].get(e["barTs"])
+        actual = closes_at.get(e["timeframe"], {}).get(e["barTs"])
         if actual is not None and abs(actual - e["spot"]) > 0.01:
             mism.append((e["id"], e["spot"], round(actual, 2)))
     check("every live entry's price is the close of the bar it names", not mism,

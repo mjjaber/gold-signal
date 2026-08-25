@@ -84,6 +84,14 @@
   .prow .sub2{font-size:10.5px;color:var(--dim);margin-top:2px}
   .prow .val{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
   .spread{font-size:11px;color:var(--dim);text-align:center;margin-top:8px}
+  .zbar{position:relative;height:34px;border-radius:8px;overflow:hidden;margin:12px 0 6px;
+    background:linear-gradient(90deg,rgba(239,68,68,.30),rgba(234,179,8,.22) 45%,
+    rgba(234,179,8,.22) 55%,rgba(34,197,94,.34))}
+  .zbar .mk{position:absolute;top:-3px;bottom:-3px;width:3px;background:var(--txt)}
+  .zbar .cut{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.30)}
+  .zends{display:flex;justify-content:space-between;font-size:10.5px;color:var(--dim)}
+  .zhead{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+  .zhead b{font-size:20px;font-weight:800;letter-spacing:-.3px}
   .verdict{
     border-radius:18px;padding:26px 20px;text-align:center;
     background:var(--card);border:1px solid var(--line);position:relative;overflow:hidden
@@ -321,6 +329,7 @@ function render(){
     proximity(s, bar) +
     trackRecord(s, bar) +
     heatmap(s) +
+    basisCard() +
     scorecard(s, bar) +
     learning(s, bar) +
     saved(s, bar) +
@@ -665,6 +674,71 @@ function learning(s, bar){
     '&ldquo;more right&rdquo;.</div></section>';
 }
 
+function basisCard(){
+  var b = DATA.basis;
+  if (!b || !b.zones) return '';
+  var z = b.zones[b.zone], base = b.baseline;
+  var COL = {high: 'var(--buy)', low: 'var(--sell)', middle: 'var(--hold)'};
+  var NAME = {high: 'Wide contango', low: 'Backwardation', middle: 'Neutral'};
+
+  // Percentile drives the marker, so the reader sees where today sits in the
+  // distribution rather than an unanchored decimal.
+  var pos = Math.max(2, Math.min(98, b.percentile));
+
+  var rows = ['high', 'middle', 'low'].map(function(k){
+    var v = b.zones[k];
+    if (!v) return '';
+    var here = k === b.zone;
+    return '<tr' + (here ? ' style="background:var(--card2)"' : '') + '>' +
+      '<td>' + (here ? '<b style="color:' + COL[k] + '">\u25b8 ' + NAME[k] + '</b>' : NAME[k]) +
+      '<br><small style="color:var(--dim)">n=' + v.n + '</small></td>' +
+      '<td><b style="color:' + (v.mean > base.mean ? 'var(--buy)' : 'var(--dim)') + '">' +
+        pct(v.mean) + '</b></td>' +
+      '<td>' + v.win + '%</td>' +
+      '<td style="color:var(--dim)">' + pct(v.p10) + '</td>' +
+      '<td style="color:var(--dim)">' + pct(v.p90) + '</td></tr>';
+  }).join('');
+
+  var wf = b.walkForward;
+  var proof = wf
+    ? 'Walk-forward tested \u2014 with the zone threshold taken only from the trailing two ' +
+      'years, high-basis days returned <b>' + pct(wf.high) + '</b> against <b>' + pct(wf.rest) +
+      '</b> for everything else, a <b>' + wf.edge.toFixed(2) + 'pp</b> edge over ' + wf.n + ' days.'
+    : '';
+
+  return '<section class="card"><h2>Futures\u2013bullion basis \u00b7 ' + b.window +
+      '-day average</h2>' +
+    '<div class="zhead"><span style="color:var(--dim);font-size:12px">' +
+      b.percentile + 'th percentile of the last 10 years</span>' +
+      '<b style="color:' + COL[b.zone] + '">' + NAME[b.zone] + '</b></div>' +
+    '<div class="zbar">' +
+      '<div class="cut" style="left:20%"></div><div class="cut" style="left:80%"></div>' +
+      '<div class="mk" style="left:' + pos + '%"></div></div>' +
+    '<div class="zends"><span>backwardation</span><span>neutral</span><span>wide contango</span></div>' +
+
+    '<table style="margin-top:14px"><thead><tr><th>Zone</th><th>Next ' + b.horizon + 'd</th>' +
+      '<th>Win</th><th>p10</th><th>p90</th></tr></thead><tbody>' + rows +
+      '<tr><td><b>Any day</b><br><small style="color:var(--dim)">baseline</small></td>' +
+      '<td><b>' + pct(base.mean) + '</b></td><td>' + base.win + '%</td>' +
+      '<td style="color:var(--dim)">' + pct(base.p10) + '</td>' +
+      '<td style="color:var(--dim)">' + pct(base.p90) + '</td></tr>' +
+    '</tbody></table>' +
+
+    '<div class="verdictline">The ' + b.window + '-day average gap between the COMEX settle ' +
+    'and the LBMA bullion fix has sat in the <b>' + NAME[b.zone].toLowerCase() + '</b> zone for ' +
+    b.streak + ' session' + (b.streak === 1 ? '' : 's') + ' (' + b.avg.toFixed(3) + 'pp, ' +
+    b.percentile + 'th percentile). Historically that zone was followed by <b>' + pct(z.mean) +
+    '</b> in bullion over ' + b.horizon + ' sessions against a ' + pct(base.mean) + ' baseline.' +
+    '<br><br>' + proof +
+    '<br><br><b>Read this one carefully.</b> Wide contango being the bullish setup is the ' +
+    'opposite of the usual scarcity story, and the edge is <b>absent in ' +
+    (b.yearsTotal - b.yearsPositive) + ' of ' + b.yearsTotal + ' individual years</b>. ' +
+    'Entry is measured from the <em>next</em> fix, not the one the basis was read against \u2014 ' +
+    'without that delay the whole effect is just the fix being struck hours before the settle. ' +
+    'Every reading is logged to the ledger and scored like any other call.</div>' +
+    '</section>';
+}
+
 function scorecard(s, bar){
   var sc = DATA.scorecard && DATA.scorecard[KEY];
   if (!sc || !sc.n) return '';
@@ -811,7 +885,9 @@ function entryLine(e, unit, mine){
 function saved(s, bar){
   var unit = bar === 'week' ? 'w' : 'd';
   var mine = loadSaved().filter(function(e){ return e.timeframe === KEY; });
-  var auto = (DATA.recent || []).filter(function(e){ return e.timeframe === KEY; }).slice(0, 6);
+  var auto = (DATA.recent || []).filter(function(e){
+    return e.timeframe === KEY || e.timeframe === 'basis';
+  }).slice(0, 6);
 
   var mineHtml = mine.length
     ? '<ul class="log">' + mine.map(function(e, i){

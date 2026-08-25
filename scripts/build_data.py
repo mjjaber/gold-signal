@@ -16,6 +16,8 @@ import os
 import ssl
 import sys
 import time
+import calendar
+import datetime
 import urllib.parse
 import urllib.request
 
@@ -65,6 +67,13 @@ SPOT_SOURCES = [
     ("Swissquote", "https://forex-data-feed.swissquote.com/public-quotes/"
                    "bboquotes/instrument/XAU/USD"),
 ]
+# The LBMA PM fix is the bullion benchmark, published daily back to 1968. Its
+# gap to the COMEX settle -- averaged over 20 sessions -- is the one input in
+# this project that survived a walk-forward test and a block permutation test.
+LBMA_URL = "https://prices.lbma.org.uk/json/gold_pm.json"
+BASIS_WIN = 20        # sessions in the average
+BASIS_HORIZON = 21    # sessions ahead the signal is scored over
+BASIS_LOOKBACK = 500  # trailing window the zone thresholds are drawn from
 OUT = os.path.join(os.path.dirname(__file__), "..", "docs", "data.json")
 LEDGER = os.path.join(os.path.dirname(__file__), "..", "docs", "predictions.json")
 
@@ -149,6 +158,149 @@ def spot_bullion():
             errs.append(f"{name}: {exc}")
     print(f"  spot bullion unavailable ({'; '.join(errs)})")
     return None
+
+
+# ---------------------------------------------------------------- basis
+
+def _day_ts(datestr):
+    """UTC midnight for a YYYY-MM-DD string. time.mktime overflows on the
+    pre-1970 end of the LBMA series on Windows, and is local-time besides."""
+    return calendar.timegm(datetime.date.fromisoformat(datestr).timetuple())
+
+
+def lbma_fixes():
+    """Daily LBMA PM gold fix, as {date: usd}."""
+    out = {}
+    for row in _get_json(LBMA_URL, timeout=30):
+        v = row.get("v") or []
+        if v and v[0]:
+            out[row["d"]] = float(v[0])
+    return out
+
+
+def _align_basis(fixes, fut_rows):
+    """One row per session where both a fix and a settle exist.
+
+    The fix is struck at 15:00 London and the settle hours later, so a single
+    day's gap is noisy -- which is exactly why the signal is the 20-session
+    average and never the daily print.
+    """
+    fut = {}
+    for r in fut_rows:
+        fut[time.strftime("%Y-%m-%d", time.gmtime(r["t"] + 6 * 3600))] = r["c"]
+    days = sorted(set(fixes) & set(fut))
+    return [{"d": d, "spot": fixes[d], "fut": fut[d],
+             "basis": (fut[d] - fixes[d]) / fixes[d] * 100} for d in days]
+
+
+def _fwd(rows, i, h):
+    """Forward spot return, entered at the NEXT fix.
+
+    The delay is the whole point: entering at the same fix the basis was
+    measured against scores a move that had already happened by the time the
+    basis was observable, which manufactures an edge that cannot be traded.
+    """
+    a, b = i + 1, i + 1 + h
+    if b >= len(rows):
+        return None
+    return (rows[b]["spot"] - rows[a]["spot"]) / rows[a]["spot"] * 100
+
+
+def basis_signal(fixes, fut_rows):
+    rows = _align_basis(fixes, fut_rows)
+    n = len(rows)
+    if n < BASIS_LOOKBACK + BASIS_WIN + BASIS_HORIZON:
+        raise ValueError(f"only {n} aligned sessions")
+
+    avg = [None] * n
+    for i in range(BASIS_WIN, n):
+        avg[i] = sum(r["basis"] for r in rows[i - BASIS_WIN:i + 1]) / (BASIS_WIN + 1)
+
+    # Thresholds come from the trailing window only, so the zone shown today is
+    # one that could have been computed on the day -- same rule the walk-forward
+    # test validated.
+    hist = sorted(a for a in avg[max(0, n - BASIS_LOOKBACK):] if a is not None)
+    hi_cut = hist[int(len(hist) * 0.8)]
+    lo_cut = hist[int(len(hist) * 0.2)]
+    cur = avg[n - 1]
+    zone = "high" if cur >= hi_cut else "low" if cur <= lo_cut else "middle"
+    pct = round(sum(1 for a in hist if a < cur) / len(hist) * 100)
+
+    streak = 0
+    for i in range(n - 1, BASIS_WIN - 1, -1):
+        z = "high" if avg[i] >= hi_cut else "low" if avg[i] <= lo_cut else "middle"
+        if z != zone:
+            break
+        streak += 1
+
+    def stats(idx):
+        xs = sorted(x for x in (_fwd(rows, i, BASIS_HORIZON) for i in idx) if x is not None)
+        if len(xs) < 30:
+            return None
+        return {"n": len(xs), "mean": round(sum(xs) / len(xs), 2),
+                "p10": round(_pctile(xs, .10), 2), "p50": round(_pctile(xs, .50), 2),
+                "p90": round(_pctile(xs, .90), 2),
+                "win": round(sum(1 for x in xs if x > 0) / len(xs) * 100)}
+
+    have = [i for i in range(n) if avg[i] is not None and _fwd(rows, i, BASIS_HORIZON) is not None]
+    zones = {}
+    for name, sel in (("high", [i for i in have if avg[i] >= hi_cut]),
+                      ("middle", [i for i in have if lo_cut < avg[i] < hi_cut]),
+                      ("low", [i for i in have if avg[i] <= lo_cut])):
+        zones[name] = stats(sel)
+    baseline = stats(have)
+
+    # Walk-forward: threshold recomputed from the trailing window at each step,
+    # so nothing here uses a cutoff derived from data that had not happened yet.
+    picks, others = [], []
+    for i in have:
+        past = [avg[j] for j in have if i - BASIS_LOOKBACK <= j < i]
+        if len(past) < 200:
+            continue
+        cut = sorted(past)[int(len(past) * 0.8)]
+        (picks if avg[i] >= cut else others).append(i)
+    wf = None
+    if len(picks) >= 50 and len(others) >= 50:
+        a = sum(_fwd(rows, i, BASIS_HORIZON) for i in picks) / len(picks)
+        b = sum(_fwd(rows, i, BASIS_HORIZON) for i in others) / len(others)
+        wf = {"high": round(a, 2), "rest": round(b, 2), "edge": round(a - b, 2),
+              "n": len(picks)}
+
+    # Per-year honesty: this edge is real on average and absent in some years.
+    years = {}
+    for i in have:
+        years.setdefault(rows[i]["d"][:4], []).append(i)
+    per_year = []
+    for y, idx in sorted(years.items()):
+        if len(idx) < 80:
+            continue
+        g = sorted(idx, key=lambda i: avg[i])
+        q = max(len(g) // 5, 5)
+        lo = sum(_fwd(rows, i, BASIS_HORIZON) for i in g[:q]) / q
+        hi = sum(_fwd(rows, i, BASIS_HORIZON) for i in g[-q:]) / q
+        per_year.append({"year": y, "spread": round(hi - lo, 2)})
+
+    return {
+        "asOf": rows[-1]["d"],
+        "spot": round(rows[-1]["spot"], 2),
+        "future": round(rows[-1]["fut"], 2),
+        "dayBasis": round(rows[-1]["basis"], 2),
+        "avg": round(cur, 3),
+        "window": BASIS_WIN,
+        "horizon": BASIS_HORIZON,
+        "zone": zone,
+        "percentile": pct,
+        "streak": streak,
+        "cuts": {"high": round(hi_cut, 3), "low": round(lo_cut, 3)},
+        "zones": zones,
+        "baseline": baseline,
+        "walkForward": wf,
+        "perYear": per_year,
+        "yearsPositive": sum(1 for y in per_year if y["spread"] > 0),
+        "yearsTotal": len(per_year),
+        "history": [{"d": r["d"], "a": round(avg[i], 3)}
+                    for i, r in enumerate(rows) if avg[i] is not None][-180:],
+    }
 
 
 # ---------------------------------------------------------------- indicators
@@ -759,6 +911,33 @@ def log_prediction(ledger, timeframe, s, spot, bars_per_year):
     return entry
 
 
+def log_basis_prediction(ledger, b):
+    """One entry per fix. Bands come from what actually followed this zone
+    historically, and the due date honours the one-session entry delay."""
+    z = b["zones"].get(b["zone"])
+    if not z:
+        return None
+    bar_ts = _day_ts(b["asOf"])
+    key = f"basis-{bar_ts}"
+    if any(e["id"] == key for e in ledger["entries"]):
+        return None
+    h = str(b["horizon"])
+    entry = {
+        "id": key, "timeframe": "basis", "barTs": bar_ts, "made": int(time.time()),
+        "spot": b["spot"], "verdict": {"high": "BUY", "low": "SELL"}.get(b["zone"], "HOLD"),
+        "raw": b["zone"], "notes": [f"{b['percentile']}th-pct-basis"],
+        "rsi": None, "maGap": None, "bucket": b["zone"] + " basis",
+        "basis": b["avg"], "percentile": b["percentile"],
+        "bands": {h: {"p10": z["p10"], "p50": z["p50"], "p90": z["p90"]}},
+        # +1 session for the entry delay, then the horizon, in calendar days
+        # allowing for weekends (~7/5).
+        "dueAt": {h: bar_ts + int((b["horizon"] + 1) * 86400 * 7 / 5)},
+        "results": {},
+    }
+    ledger["entries"].append(entry)
+    return entry
+
+
 def score_ledger(ledger, rows_by_tf, tol_by_tf):
     """Resolve every horizon whose due date has passed. Idempotent: a horizon
     already scored is never rewritten, so the record can't drift."""
@@ -1046,10 +1225,25 @@ def main():
         print(f"  spot quote unavailable: {exc}")
 
     rows_by_tf = {"weekly": weekly["_rows"], "daily": daily["_rows"]}
+    _fixes_cache = {}
     # A due date must land on a bar close to it: ~2 weeks for weekly, ~5 days for
     # daily. Anything further out means the series has a hole and the horizon
     # stays unscored rather than being resolved against the wrong price.
     tol_by_tf = {"weekly": 14 * 86400, "daily": 5 * 86400}
+
+    basis = None
+    try:
+        basis = basis_signal(lbma_fixes(), rows_by_tf["daily"])
+        z = basis["zones"].get(basis["zone"])
+        print(f"  basis: {basis['avg']:+.3f}pp 20d avg, {basis['percentile']}th pct, "
+              f"'{basis['zone']}' zone for {basis['streak']}d"
+              + (f" -> hist {z['mean']:+.2f}% over {basis['horizon']}d (n={z['n']})" if z else "")
+              + (f" | walk-fwd edge {basis['walkForward']['edge']:+.2f}pp"
+                 if basis["walkForward"] else "")
+              + f" | positive in {basis['yearsPositive']}/{basis['yearsTotal']} years")
+    except Exception as exc:  # noqa: BLE001 - the card simply does not render
+        print(f"  basis signal unavailable: {exc}")
+
 
     ledger = _load_ledger()
     if not any(e.get("backfilled") for e in ledger["entries"]):
@@ -1073,6 +1267,16 @@ def main():
 
     made = [log_prediction(ledger, "weekly", weekly, weekly["last"], 52),
             log_prediction(ledger, "daily", daily, daily["last"], 252)]
+    if basis:
+        made.append(log_basis_prediction(ledger, basis))
+    if basis:
+        # Basis calls predict the bullion fix, so they score against the fix
+        # series -- not the futures the other two timeframes use.
+        # Only the modern span is needed for scoring, and it keeps the pass cheap.
+        rows_by_tf["basis"] = [{"t": _day_ts(d), "c": v}
+                               for d, v in sorted(lbma_fixes().items())
+                               if d >= "2010-01-01"]
+        tol_by_tf["basis"] = 10 * 86400
     resolved = score_ledger(ledger, rows_by_tf, tol_by_tf)
     ledger["updated"] = int(time.time())
     with open(LEDGER, "w", encoding="utf-8") as f:
@@ -1094,6 +1298,7 @@ def main():
     payload = {
         "generated": int(time.time()),
         "bullion": bullion,
+        "basis": basis,
         "scorecard": {"weekly": scorecard(ledger, "weekly"),
                       "daily": scorecard(ledger, "daily")},
         "recent": _recent(ledger),

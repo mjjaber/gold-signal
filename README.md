@@ -278,6 +278,68 @@ Tuning lives in the constants at the top of `scripts/build_data.py`: `FAST/SLOW/
 `MA_LEN`, `RSI_LEN`, `RSI_HOT/RSI_COLD`. The page reads them out of `data.json`, so the
 footer and the labels follow along automatically.
 
+## The basis signal
+
+The one input in this project that survived every test thrown at it. The gap between the
+COMEX settle and the LBMA PM bullion fix, averaged over 20 sessions, predicts spot bullion's
+next 21 sessions.
+
+| Zone (20d avg basis) | Next 21d | Win | p10 | p90 | n |
+|---|---|---|---|---|---|
+| Wide contango (top quintile) | **+3.25%** | 73% | −2.76% | +10.12% | 293 |
+| Neutral | +1.12% | 57% | −3.81% | +6.80% | 1558 |
+| Backwardation (bottom quintile) | +0.15% | 52% | −4.73% | +5.37% | 553 |
+| *Any day* | *+1.16%* | *58%* | | | 2404 |
+
+**Wide contango is the bullish setup** — the opposite of the usual "backwardation means
+scarcity means bullish" story.
+
+### Why this one is believed and the others were not
+
+**The entry is delayed by one session, and that is not a detail — it is the whole result.**
+The LBMA fix is struck at 15:00 London and the COMEX settle prints hours later, so a wide
+basis partly just means gold rallied after the fix was taken. Score the forward return from
+that same stale fix and a huge, monotonic, out-of-sample-stable signal appears that is pure
+arithmetic:
+
+| z > +2 (futures rich) | 5d | 10d |
+|---|---|---|
+| entered at the same (stale) fix | +1.76% | +1.54% |
+| entered at the next fix | +0.32% | +0.33% |
+| *baseline* | *+0.31%* | *+0.61%* |
+
+Everything in `basis_signal()` measures from the next fix.
+
+**It is not momentum in disguise.** Within each trailing-momentum tier, high basis beat low
+basis by +1.13 / +1.58 / +1.70pp. The mirror test — momentum within each basis tier — gives
++0.08pp. The basis subsumes momentum, not the other way round.
+
+**It survives walk-forward.** With the zone threshold drawn only from the trailing 500
+sessions, high-basis days returned +2.85% against +0.84% for everything else: a +2.02pp edge
+over 464 days, using a cutoff that could have been computed on the day.
+
+**It survives a block permutation test** that preserves autocorrelation: p = 0.0038.
+
+### What was rejected along the way
+
+- **Single-day basis extremes** — 78 days collapse to 48 distinct episodes; episode-weighted
+  mean +0.93% against a +1.12% baseline, permutation p = 0.61. The day-weighted version only
+  looked good because long episodes cluster inside rallies.
+- **Sustained backwardation as a scarcity signal** — 35 regimes, mean +2.33% against a +3.66%
+  baseline, p = 0.84.
+- **Sustained steep contango** — +14.99% against +3.66% and 3-for-3, but n = 3 regimes. An
+  anecdote, not evidence.
+
+### The limits, stated on the card itself
+
+The edge is **absent in 4 of the 10 individual years** (2018, 2023, and flat in 2017 and
+2026). There are only ten years of usable overlap. Part of the mechanism is probably a
+persistent intraday drift regime rather than anything about gold fundamentals, which could
+stop working if market structure changes.
+
+Every reading is logged to the same prediction ledger as the MACD calls and scored the same
+way, so it will be held to its own record rather than to this README.
+
 ## Futures vs bullion
 
 The verdict card shows two prices stacked: the COMEX front-month future and spot bullion
