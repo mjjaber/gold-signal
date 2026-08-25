@@ -1,4 +1,4 @@
-# Gold Signal
+# Gold Doctor Signal
 
 A phone-friendly BUY / HOLD / SELL readout for gold, driven by MACD (12/26/9) on the
 weekly close, filtered by trend regime and flagged by RSI — with an honest backtest
@@ -277,6 +277,36 @@ python -m http.server -d docs    # then open http://localhost:8000
 Tuning lives in the constants at the top of `scripts/build_data.py`: `FAST/SLOW/SIGNAL`,
 `MA_LEN`, `RSI_LEN`, `RSI_HOT/RSI_COLD`. The page reads them out of `data.json`, so the
 footer and the labels follow along automatically.
+
+## Security posture
+
+The site is a static page on GitHub Pages with no server, no database, no accounts, and no
+user input. Notes for anyone auditing it:
+
+- **No secrets anywhere.** Every data source is keyless (Yahoo Finance chart endpoints), so
+  the public repo holds no credentials. Nothing needs rotating if the repo is forked.
+- **Visitors never talk to a third party.** All price fetching happens server-side in the
+  GitHub Action. The browser makes exactly one request — a relative `data.json` on its own
+  origin — so no visitor IP ever reaches Yahoo, and there is no CDN, analytics, font host,
+  or tracker on the page.
+- **Saved predictions are per-device.** They live in `localStorage`, scoped to the origin.
+  Nothing is uploaded, nothing is shared between visitors, and one person's saves are
+  invisible to everyone else. Clearing site data erases them.
+- **CSP is set via meta tag**: `default-src 'none'` with `connect-src 'self'`, so even a
+  poisoned `data.json` has no route to send anything anywhere. `frame-ancestors` is omitted
+  because it is ignored in meta form; clickjacking cover would need response headers, which
+  GitHub Pages does not offer.
+- **Stored state is treated as untrusted.** Everything read back from `localStorage` is
+  coerced by type on load and the verdict is whitelisted to BUY/HOLD/SELL before it reaches
+  `innerHTML`. Tested with a payload in the stored verdict field: it renders as the literal
+  text `HOLD` and executes nothing.
+- **The Action cannot be triggered by a fork.** It runs on `schedule`, `workflow_dispatch`,
+  and `push` to `main` only. There is no `pull_request_target`, so the `contents: write`
+  token is never exposed to an outside contributor's code.
+
+What is *not* protected: the ledger in `docs/predictions.json` is world-readable by design,
+and the repo is public. Neither contains anything personal — the only data in the project is
+the price of gold.
 
 ## Not financial advice
 

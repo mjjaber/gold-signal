@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0d0f14">
-<title>Gold Signal</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<title>Gold Doctor Signal</title>
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%AA%99%3C/text%3E%3C/svg%3E">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%AA%99%3C/text%3E%3C/svg%3E">
 <style>
@@ -126,7 +127,7 @@
 </head>
 <body>
 <header>
-  <h1>GOLD <span>MACD</span> SIGNAL</h1>
+  <h1>GOLD <span>DOCTOR</span> SIGNAL</h1>
   <div class="tf" id="tf">
     <button type="button" data-k="weekly" aria-pressed="true">Weekly</button>
     <button type="button" data-k="daily" aria-pressed="false">Daily</button>
@@ -151,6 +152,15 @@ var FLAGS = {
   'momentum-weak':    'Weak momentum · worse setup'
 };
 var DATA = null, KEY = 'weekly';
+
+function esc(v){
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function safeVerdict(v){
+  return (v === 'BUY' || v === 'SELL' || v === 'HOLD') ? v : 'HOLD';
+}
 
 function F(n, d){
   if (n === null || n === undefined) return '–';
@@ -187,7 +197,7 @@ function render(){
   var chg = s.last - s.prev, cp = chg / s.prev * 100;
 
   var flags = (s.notes || []).map(function(n){
-    return '<span class="flag">' + (FLAGS[n] || n) + '</span>';
+    return '<span class="flag">' + (FLAGS[n] || esc(n)) + '</span>';
   }).join('');
   var regimeFlag = '<span class="flag" style="color:' +
     (d.regime === 'uptrend' ? 'var(--buy)' : 'var(--sell)') + '">' +
@@ -567,7 +577,24 @@ function scorecard(s, bar){
 var LS = 'goldsignal.saved.v1';
 
 function loadSaved(){
-  try { return JSON.parse(localStorage.getItem(LS)) || []; } catch (e){ return []; }
+  var raw;
+  try { raw = JSON.parse(localStorage.getItem(LS)); } catch (e){ return []; }
+  if (!Array.isArray(raw)) return [];
+  // Coerce every field read back off the device: the stored blob is editable by
+  // whoever owns the browser, and all of it is about to be interpolated.
+  return raw.filter(function(e){ return e && typeof e === 'object'; }).map(function(e){
+    return {
+      timeframe: e.timeframe === 'daily' ? 'daily' : 'weekly',
+      barTs: Number(e.barTs) || 0,
+      made: Number(e.made) || 0,
+      spot: Number(e.spot) || 0,
+      verdict: safeVerdict(e.verdict),
+      bucket: esc(e.bucket),
+      bands: (e.bands && typeof e.bands === 'object') ? e.bands : {},
+      dueAt: (e.dueAt && typeof e.dueAt === 'object') ? e.dueAt : {},
+      results: (e.results && typeof e.results === 'object') ? e.results : {}
+    };
+  });
 }
 function writeSaved(a){
   try { localStorage.setItem(LS, JSON.stringify(a)); } catch (e){}
@@ -637,7 +664,8 @@ function entryLine(e, unit, mine){
   });
   var tag = e.backfilled ? '<span class="tag">replay</span>'
           : mine ? '<span class="tag">saved</span>' : '';
-  return '<div class="top"><b style="color:' + COLOR[e.verdict] + '">' + e.verdict + '</b>' +
+  var v = safeVerdict(e.verdict);
+  return '<div class="top"><b style="color:' + COLOR[v] + '">' + v + '</b>' +
       '<span class="when">$' + F(e.spot, 0) + ' &middot; ' + fmtDate(e.barTs) + tag + '</span></div>' +
     '<div class="res">' + parts.join('<br>') + '</div>';
 }
