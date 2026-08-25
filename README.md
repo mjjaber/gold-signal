@@ -278,6 +278,40 @@ Tuning lives in the constants at the top of `scripts/build_data.py`: `FAST/SLOW/
 `MA_LEN`, `RSI_LEN`, `RSI_HOT/RSI_COLD`. The page reads them out of `data.json`, so the
 footer and the labels follow along automatically.
 
+## Accuracy audit
+
+`scripts/audit.py` runs after every build (and in CI, before anything is committed) and
+exits non-zero on failure. It checks indicator maths against independent reference
+implementations, verifies that nothing computed at bar *i* moves when later bars arrive,
+and re-checks the published files for the specific mistakes this project has actually made.
+
+```bash
+python scripts/build_data.py && python scripts/audit.py
+```
+
+The maths came back clean — EMA, SMA, Wilder RSI and the percentile interpolation all match
+reference implementations exactly, and truncating the series leaves every earlier value,
+verdict and backfilled band bit-identical. Three real defects turned up elsewhere.
+
+**The call was being read off an unfinished candle.** Yahoo returns more than one trailing
+partial bar on a weekly series — the current week *and* a separate bar carrying the live
+quote — so trimming the last bar was not enough. Measured against 25 years of daily data,
+a weekly verdict read one trading day into the week disagrees with what that same bar
+finally says **30.8% of the time**, and is still wrong 20% of the time by Friday. Trailing
+partials are now trimmed in a loop, the call is based on the last completed close, and the
+forming bar is shown as a separate "this week so far" flag that drives nothing.
+
+**Backtests filled at the signal bar's own close.** A close cannot be traded until it has
+printed. Signals now fill one bar late, which costs the weekly position rule 1.4 points of
+CAGR (8.12% → 6.71%) and deepens its worst drawdown from −43.6% to −50.1%. The sensitivity
+grid uses the same lag, or its cells would not be comparable with the table above them. The
+same-bar figure is still shown, in small type, as what the optimistic version claims.
+
+**Logged predictions paired a live tick with a completed bar's timestamp.** An entry stored
+the current spot as its t0 price while naming a bar that closed up to a week earlier, so
+every horizon was measured from the wrong starting point. Entries now record the close of
+the bar they name, and the audit verifies that price against the source series.
+
 ## Security posture
 
 The site is a static page on GitHub Pages with no server, no database, no accounts, and no

@@ -44,6 +44,9 @@ jobs:
       - name: Rebuild data and score the ledger
         run: python scripts/build_data.py
 
+      - name: Audit accuracy
+        run: python scripts/audit.py
+
       - name: Commit if changed
         run: |
           git config user.name "github-actions[bot]"

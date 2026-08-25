@@ -207,13 +207,14 @@ function render(){
   document.getElementById('app').innerHTML =
     '<section class="verdict" style="--vc:' + COLOR[s.verdict] + '">' +
       '<div class="call">' + s.verdict + '</div>' +
-      '<div class="sub">' + KEY + ' · gold' +
-        (s.raw !== s.verdict ? ' · MACD alone said ' + s.raw : '') + '</div>' +
+      '<div class="sub">' + KEY + ' &middot; ' +
+        (s.asOf ? 'as of ' + fmtDate(s.asOf) + ' close' : 'gold') +
+        (s.raw !== s.verdict ? ' &middot; MACD alone said ' + s.raw : '') + '</div>' +
       '<div class="price">$' + F(DATA.spot) + '</div>' +
       '<div class="chg ' + (chg >= 0 ? 'up' : 'down') + '">' +
         (chg >= 0 ? '▲ ' : '▼ ') + F(Math.abs(chg)) +
         ' (' + (cp >= 0 ? '+' : '−') + F(Math.abs(cp)) + '%) this ' + bar + '</div>' +
-      '<div class="flags">' + regimeFlag + flags + '</div>' +
+      '<div class="flags">' + regimeFlag + flags + provisionalFlag(s) + '</div>' +
       '<div class="why">' + s.why + '</div>' +
     '</section>' +
 
@@ -281,8 +282,11 @@ function trackRecord(s, bar){
   var t = s.test;
   if (!t || !t.bars) return '';
   var row = function(name, r, note){
+    var opt = (r.cagrNoLag !== null && r.cagrNoLag !== undefined && r.cagr !== null &&
+               Math.abs(r.cagrNoLag - r.cagr) > 0.05)
+      ? '<br><small style="color:var(--dim)">' + pct(r.cagrNoLag) + ' if filled same bar</small>' : '';
     return '<tr><td>' + name + (note ? '<br><small style="color:var(--dim)">' + note + '</small>' : '') +
-      '</td><td><b>' + pct(r.cagr) + '</b></td><td style="color:var(--sell)">' + pct(r.maxDD) +
+      '</td><td><b>' + pct(r.cagr) + '</b>' + opt + '</td><td style="color:var(--sell)">' + pct(r.maxDD) +
       '</td><td>' + r.exposure + '%</td></tr>';
   };
   var pos = t.position, hold = t.hold;
@@ -307,15 +311,25 @@ function trackRecord(s, bar){
     '<div class="verdictline">' + line + '<br>' +
     pos.n + ' completed BUY trades, ' + (pos.winRate === undefined ? '–' : pos.winRate + '%') +
     ' of them profitable, averaging ' + pct(pos.avg) + ' over ' + pos.avgBars + ' ' + bar + 's ' +
-    '(best ' + pct(pos.best) + ', worst ' + pct(pos.worst) + ').</div>' +
+    '(best ' + pct(pos.best) + ', worst ' + pct(pos.worst) + ').' + '<br><br>Signals are filled one bar after they fire, because the close that produces a signal is not known until the bar has closed. Filling on the signal bar itself flatters the weekly position rule by 1.4 points of CAGR. No commission or spread is modelled.</div>' +
     '</section>';
+}
+
+function provisionalFlag(s){
+  if (!s.forming || !s.provisional) return '';
+  var p = s.provisional, same = p.verdict === s.verdict;
+  return '<span class="flag" style="color:' + (same ? 'var(--dim)' : 'var(--hold)') + '">' +
+    'this ' + (KEY === 'weekly' ? 'week' : 'day') + ' so far: ' + p.verdict +
+    (same ? '' : ' (unconfirmed)') + '</span>';
 }
 
 function hero(s, bar){
   var o = s.outlook, d = s.detail;
   if (!o || !o.bands) return '';
   var unit = bar === 'week' ? 'w' : 'd';
-  var spot = DATA.spot;
+  // Bands are measured from closes, so the projection anchors to the last
+  // completed close. The live tick is shown alongside, not used as the base.
+  var spot = (DATA.anchor && DATA.anchor[KEY]) || DATA.spot;
 
   // Plain-language momentum read, assembled from what was actually measured.
   var dirn = {BUY: 'building to the upside', SELL: 'building to the downside',
@@ -326,7 +340,8 @@ function hero(s, bar){
     pct(d.maGap) + ' ' + (d.maGap >= 0 ? 'above' : 'below') + ' its 50-' + bar +
     ' average, and RSI is ' + F(d.rsi, 0) + '. ' +
     'Gold sits in the <b>' + o.bucket + '</b> zone, ' + s.proximity.now.drawdown +
-    '% off its period high.';
+    '% off its period high. Projected from the ' + fmtDate(s.asOf) + ' close of $' +
+    F(spot, 0) + (Math.abs(DATA.spot - spot) > 0.5 ? ' (live: $' + F(DATA.spot, 0) + ')' : '') + '.';
 
   var rows = o.horizons.map(function(h){
     var b = o.bands[String(h)];
@@ -481,7 +496,7 @@ function heatmap(s){
 }
 
 function fmtDate(ts){
-  return new Date(ts * 1000).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'2-digit'});
+  return new Date(ts * 1000).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
 }
 
 function learning(s, bar){

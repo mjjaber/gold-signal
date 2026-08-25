@@ -39,6 +39,15 @@ BUCKETS = [(0, 2, "at the highs"), (2, 5, "shallow dip"), (5, 10, "moderate dip"
 COVERAGE_TARGET = 80.0
 CAL_SHRINK = 30      # samples before a fitted factor is trusted at full weight
 CAL_MAX = 3.0        # hard ceiling; a band needing more than 3x is not a band
+# Bars still inside their own period are excluded from the call. Measured on 25y
+# of gold, a weekly verdict read one trading day into the week disagrees with
+# what that same bar finally says 30.8% of the time, and is still wrong 20% of
+# the time on the Friday. The forming bar is reported separately as provisional.
+PERIOD_SECS = {"1wk": 7 * 86400, "1d": 86400}
+# Signals are acted on one bar late, because the close that produces a signal is
+# only known once the bar has closed. Same-bar fills flatter the record by 1.4
+# points of CAGR (8.12% -> 6.76% on the weekly position rule).
+EXEC_LAG = 1
 # COMEX gold future first, spot as fallback. Ranges are per-symbol: Yahoo
 # truncates "max" on weekly to a sparse 267 bars, and the spot symbol has no
 # deep weekly history at all, so each source states what it can actually serve.
@@ -232,12 +241,17 @@ def _as_position(states):
     return out
 
 
-def _equity(closes, states, start):
-    """Long-only: compounded while the state is BUY, flat otherwise. Returns the
-    curve plus how many bars were spent in the market."""
+def _equity(closes, states, start, lag=EXEC_LAG):
+    """Long-only: compounded while the state is BUY, flat otherwise.
+
+    `lag` bars of delay between the signal and the fill. A signal is produced by
+    a bar's close, so the earliest you could act on it is the next bar -- lag=0
+    would be buying at a price you did not yet know.
+    """
     eq, curve, exposure = 1.0, [], 0
     for i in range(start, len(closes) - 1):
-        if states[i] == "BUY":
+        j = i - lag
+        if j >= start and states[j] == "BUY":
             eq *= closes[i + 1] / closes[i]
             exposure += 1
         curve.append(eq)
@@ -272,12 +286,14 @@ def _episodes(closes, states, start):
 def _score(closes, states, start, bars_per_year):
     eps = _episodes(closes, states, start)
     curve, exposure = _equity(closes, states, start)
+    curve0, _ = _equity(closes, states, start, lag=0)
     span = len(closes) - 1 - start
     years = span / bars_per_year
     rets = sorted(e["ret"] for e in eps)
     stats = {
         "n": len(eps),
         "cagr": _cagr(curve[-1], years) if curve else None,
+        "cagrNoLag": _cagr(curve0[-1], years) if curve0 else None,
         "maxDD": _max_drawdown(curve) if curve else None,
         "exposure": round(exposure / span * 100) if span else 0,
     }
@@ -347,9 +363,12 @@ def _position_cagr(closes, ma, fast, slow, signal, bars_per_year):
     start = next((i for i, v in enumerate(states) if v is not None), len(states))
     if start >= len(closes) - 2:
         return None
+    # Same execution lag as the headline backtest, or the grid would flatter
+    # every cell against a table it is meant to be comparable with.
     eq = 1.0
     for i in range(start, len(closes) - 1):
-        if states[i] == "BUY":
+        j = i - EXEC_LAG
+        if j >= start and states[j] == "BUY":
             eq *= closes[i + 1] / closes[i]
     return _cagr(eq, (len(closes) - 1 - start) / bars_per_year)
 
@@ -862,10 +881,21 @@ def series(interval, points):
     for sym, ranges in SOURCES:
         try:
             res = fetch(sym, interval, ranges[interval])
-            rows = candles(res)
-            if len(rows) < MA_LEN + SLOW:
-                raise ValueError(f"only {len(rows)} candles")
+            all_rows = candles(res)
+            if len(all_rows) < MA_LEN + SLOW:
+                raise ValueError(f"only {len(all_rows)} candles")
 
+            # Everything below -- verdict, bands, ledger -- runs on closed bars.
+            # Yahoo appends more than one unfinished bar: on a weekly series it
+            # returns both the current week and a separate bar carrying the live
+            # quote, so trailing partials are trimmed in a loop rather than once.
+            period = PERIOD_SECS[interval]
+            now = time.time()
+            keep_n = len(all_rows)
+            while keep_n > MA_LEN + SLOW + 1 and (now - all_rows[keep_n - 1]["t"]) < period:
+                keep_n -= 1
+            forming = keep_n < len(all_rows)
+            rows = all_rows[:keep_n]
             closes = [r["c"] for r in rows]
             line, sig, hist = macd(closes)
             ma = sma(closes, MA_LEN)
@@ -897,12 +927,26 @@ def series(interval, points):
                 "regime": "uptrend" if closes[n] > ma[n] else "downtrend",
             }
 
+            # The provisional read includes the forming bar, and is shown as a
+            # secondary number rather than driving anything.
+            provisional = None
+            if forming:
+                pc = [r["c"] for r in all_rows]
+                pl, ps, ph = macd(pc)
+                pv, pn = evaluate(pc, pl, ps, ph, sma(pc, MA_LEN), rsi(pc), len(pc) - 1)
+                provisional = {"verdict": pv, "notes": pn or [],
+                               "hist": round(ph[-1], 2) if ph[-1] is not None else None,
+                               "barTs": all_rows[-1]["t"]}
+
             keep = min(points, len(rows))
             raw_rows = rows
             r3 = lambda v: None if v is None else round(v, 3)  # noqa: E731
             return {
                 "symbol": sym,
                 "source": res["meta"].get("fullExchangeName", "Yahoo Finance"),
+                "forming": bool(forming),
+                "provisional": provisional,
+                "asOf": rows[-1]["t"],
                 "verdict": verdict,
                 "raw": raw,
                 "notes": notes,
@@ -969,8 +1013,8 @@ def main():
                              for h, v in sorted(c.items(), key=lambda kv: int(kv[0])))
             print(f"  calibration {tf}: {bits}")
 
-    made = [log_prediction(ledger, "weekly", weekly, spot, 52),
-            log_prediction(ledger, "daily", daily, spot, 252)]
+    made = [log_prediction(ledger, "weekly", weekly, weekly["last"], 52),
+            log_prediction(ledger, "daily", daily, daily["last"], 252)]
     resolved = score_ledger(ledger, rows_by_tf, tol_by_tf)
     ledger["updated"] = int(time.time())
     with open(LEDGER, "w", encoding="utf-8") as f:
@@ -991,6 +1035,7 @@ def main():
                    "ma": MA_LEN, "rsi": RSI_LEN},
         "spot": spot,
         "primary": "weekly",
+        "anchor": {"weekly": weekly["last"], "daily": daily["last"]},
         "weekly": weekly,
         "daily": daily,
     }
